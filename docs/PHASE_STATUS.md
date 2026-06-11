@@ -662,8 +662,92 @@ on a 300-step smoke train, save/load round-trip).
 
 ### 10x stochastic repeat (Phase 3)
 
-(pasted on completion)
+`python scripts/run_repeat_suite.py --runs 10 --marker stochastic`:
+
+```
+run  1/10: 56/56 as expected
+run  2/10: 56/56 as expected
+run  3/10: 56/56 as expected
+run  4/10: 56/56 as expected
+run  5/10: 56/56 as expected
+run  6/10: 56/56 as expected
+run  7/10: 56/56 as expected
+run  8/10: 56/56 as expected
+run  9/10: 56/56 as expected
+run 10/10: 56/56 as expected
+
+test                                                                                                  expected_outcome_count
+----------------------------------------------------------------------------------------------------------------------------
+tests.integration.test_agg_pairs::test_agg_strictly_reduces_consumed_pairs[bv_n30]                    10/10 PASS
+tests.integration.test_agg_pairs::test_agg_strictly_reduces_consumed_pairs[ghz_fanout_n78]            10/10 PASS
+tests.integration.test_agg_pairs::test_chain_ghz_unchanged                                            10/10 PASS
+tests.integration.test_auto_jit::test_auto_jit_completes_map_schedule_only_policy                     10/10 PASS
+tests.integration.test_auto_jit::test_auto_jit_respects_channel_and_buffer_limits                     10/10 PASS
+tests.integration.test_auto_jit::test_without_auto_jit_same_policy_truncates                          10/10 PASS
+tests.integration.test_crn_policies::test_different_seed_changes_luck                                 10/10 PASS
+tests.integration.test_crn_policies::test_identical_draws_at_identical_coordinates                    10/10 PASS
+tests.integration.test_crn_policies::test_same_policy_same_seed_identical_log                         10/10 PASS
+tests.integration.test_determinism_process::test_two_process_invocations_identical_stochastic         10/10 PASS
+tests.integration.test_expiry::test_conservation_with_interleaved_expiry_and_consumption              10/10 PASS
+tests.integration.test_expiry::test_expiry_golden_derivation                                          10/10 PASS
+tests.integration.test_expiry::test_pair_consumable_on_last_window_slot                               10/10 PASS
+tests.integration.test_expiry::test_pair_gone_one_slot_after_window                                   10/10 PASS
+tests.integration.test_greedy_jit::test_greedy_jit_invariants_stochastic_k4                           10/10 PASS
+tests.integration.test_greedy_jit::test_greedy_jit_multi_hop_line                                     10/10 PASS
+tests.integration.test_invariants::test_stochastic_jit_policy_invariants_with_expiry[p083_cut20]      10/10 PASS
+tests.integration.test_invariants::test_stochastic_jit_policy_invariants_with_expiry[p30_cut2_tight]  10/10 PASS
+tests.integration.test_invariants::test_stochastic_jit_policy_invariants_with_expiry[p50_cut1_w1b1]   10/10 PASS
+tests.integration.test_invariants::test_stochastic_random_policy_invariants[0]                        10/10 PASS
+tests.integration.test_invariants::test_stochastic_random_policy_invariants[1]                        10/10 PASS
+tests.integration.test_phase2_ordering::test_greedy_beats_random_crn_paired[adder_n4]                 10/10 PASS
+tests.integration.test_phase2_ordering::test_greedy_beats_random_crn_paired[bv_n30]                   10/10 PASS
+tests.integration.test_phase2_ordering::test_greedy_beats_random_crn_paired[ghz_fanout_n78]           10/10 XFAIL(strict, expected)
+tests.integration.test_phase2_ordering::test_greedy_beats_random_crn_paired[qaoa_n6]                  10/10 PASS
+tests.integration.test_phase2_ordering::test_regime_boundary_greedy_wins_at_higher_p[bv_n30-0.3]      10/10 PASS
+tests.integration.test_phase2_ordering::test_regime_boundary_greedy_wins_at_higher_p[qaoa_n6-0.5]     10/10 PASS
+tests.integration.test_random_prog::test_advance_only_when_forced                                     10/10 PASS
+tests.integration.test_random_prog::test_panel_circuit_completes                                      10/10 PASS
+tests.integration.test_random_prog::test_seeded_reproducibility_and_policy_seed_sensitivity           10/10 PASS
+tests.integration.test_traces::test_greedy_trace_replays_identically                                  10/10 PASS
+tests.integration.test_traces::test_random_trace_replays_identically                                  10/10 PASS
+tests.integration.test_traces::test_tampered_trace_detected                                           10/10 PASS
+tests.integration.test_traces::test_trace_records_expert_vocabulary                                   10/10 PASS
+tests.integration.test_traces::test_wrong_binding_rejected                                            10/10 PASS
+tests.statistical.test_crn_frequency::test_frequency_across_links_and_channels                        10/10 PASS
+tests.statistical.test_crn_frequency::test_success_frequency_within_99ci[0.05]                        10/10 PASS
+tests.statistical.test_crn_frequency::test_success_frequency_within_99ci[0.08333333333333333]         10/10 PASS
+tests.statistical.test_crn_frequency::test_success_frequency_within_99ci[0.3]                         10/10 PASS
+tests.unit.test_crn::test_coordinate_separation                                                       10/10 PASS
+tests.unit.test_crn::test_different_seeds_differ_somewhere                                             10/10 PASS
+tests.unit.test_crn::test_input_validation                                                            10/10 PASS
+tests.unit.test_crn::test_large_seed_supported                                                        10/10 PASS
+tests.unit.test_crn::test_query_order_independence                                                    10/10 PASS
+tests.unit.test_crn::test_same_seed_same_draws_across_engines                                         10/10 PASS
+tests.unit.test_crn::test_uniform_range_and_threshold_semantics                                       10/10 PASS
+tests.unit.test_ddqn_flat::test_action_selection_respects_mask                                        10/10 PASS
+tests.unit.test_ddqn_flat::test_double_dqn_update_runs_and_targets_sync                               10/10 PASS
+tests.unit.test_ddqn_flat::test_featurizer_shape_and_padding                                          10/10 PASS
+tests.unit.test_ddqn_flat::test_save_load_roundtrip                                                   10/10 PASS
+tests.unit.test_det_equiv::test_deterministic_mode_still_available_with_cutoff_inf                    10/10 PASS
+tests.unit.test_det_equiv::test_stochastic_p1_equals_deterministic_tep1                               10/10 PASS
+tests.unit.test_env_obs_cache::test_obs_caches_match_reference[jit]                                   10/10 PASS
+tests.unit.test_env_obs_cache::test_obs_caches_match_reference[random]                                10/10 PASS
+tests.unit.test_mhsa::test_mhsa_competitive_with_partitioner_minipanel                                10/10 PASS
+tests.unit.test_mhsa::test_mhsa_policy_completes_episode                                              10/10 PASS
+
+verdict: ALL STABLE (56 tests x 10 runs)
+```
 
 ### Clean-state verification (Phase 3)
 
-(pasted on completion)
+`python scripts/clean_state_verify.py` (fresh clone + fresh venv incl. the
+new torch dependency; episode script -> pytest (141 passed, 1 xfailed) ->
+episode script; tree-snapshot diff):
+
+```
+=== clean-state verdict ===
+pytest green:               PASS
+no test pollution:          PASS
+episode outputs identical:  PASS
+OVERALL: PASS
+```
