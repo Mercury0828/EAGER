@@ -1,0 +1,14 @@
+# Default 4-QPU 2x2 grid (guide §10.2 defaults).
+name: k4_grid
+qpus: 4
+topology: grid
+grid_dims: [2, 2]
+kappa: 8
+mode: stochastic
+t_ep: 12
+link_defaults:
+  p: 0.0833333333333333
+  W: 2
+  B: 8
+  T_cut: 20
+  w: 1.0

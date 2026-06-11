@@ -1,0 +1,15 @@
+# Deterministic 2-QPU hardware for the hand-computed golden micro-instances
+# (guide §11 Phase 1A acceptance). Generation takes exactly t_ep = 2 slots per
+# pair per channel; no decoherence cutoff (T_cut: null = infinity).
+name: golden_k2_det
+qpus: 2
+topology: line
+kappa: [2, 2]
+mode: deterministic
+t_ep: 2
+link_defaults:
+  p: 1.0          # ignored in deterministic mode
+  W: 2
+  B: 4
+  T_cut: null
+  w: 1.0

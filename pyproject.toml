@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "eager-dqc"
+version = "0.1.0"
+description = "EAGER: jointly learned qubit placement, gate scheduling, and proactive entanglement provisioning for distributed quantum computing over stochastic quantum networks"
+requires-python = ">=3.11"
+dependencies = [
+    "numpy>=1.26",
+    "networkx>=3.2",
+    "pyyaml>=6.0",
+    "pandas>=2.1",
+    "pyarrow>=14",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "stochastic: exercises the stochastic layer; included in the 10x repeat protocol",
+    "statistical: heavier statistical frequency tests",
+]

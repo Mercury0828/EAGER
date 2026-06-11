@@ -1,0 +1,8 @@
+# Example synthetic instance config (guide §10.1): N=20 qubits, M = 3*N = 60
+# two-qubit gates, fixed generator seed for reproducibility.
+name: synthetic_n20_d3
+kind: synthetic
+params:
+  num_qubits: 20
+  density: 3
+  seed: 7

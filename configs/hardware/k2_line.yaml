@@ -1,0 +1,13 @@
+# Default 2-QPU line (guide §10.2 defaults: p=1/12, W=2, B=8, T_cut=20, w=1).
+name: k2_line
+qpus: 2
+topology: line
+kappa: 12
+mode: stochastic
+t_ep: 12            # used only when mode == deterministic (guide §5.2)
+link_defaults:
+  p: 0.0833333333333333
+  W: 2
+  B: 8
+  T_cut: 20
+  w: 1.0

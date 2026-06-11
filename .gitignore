@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.pyc
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+build/
+dist/
+
+# Results: written only by experiments/; only index.json is tracked
+results/*
+!results/.gitkeep
+!results/index.json
+
+# Artifacts (checkpoints, traces) — never tracked
+artifacts/*
+!artifacts/.gitkeep
+
+# Data noise
+*.parquet
+*.pkl
+
+# OS noise
+Thumbs.db
+.DS_Store

@@ -1,0 +1,11 @@
+# Golden micro-instance 2 (guide §11 Phase 1A): two parallel remote gates that
+# both feed two parallel local gates.
+#   g0=(0,2), g1=(1,3) independent; g2=(0,1) preds {g0,g1}; g3=(2,3) preds {g0,g1}
+name: golden_micro_2
+kind: explicit
+num_qubits: 4
+gates:
+  - [0, 2]
+  - [1, 3]
+  - [0, 1]
+  - [2, 3]

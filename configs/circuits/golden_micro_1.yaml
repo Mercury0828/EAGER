@@ -1,0 +1,10 @@
+# Golden micro-instance 1 (guide §11 Phase 1A): serial chain with one remote gate.
+# Gate list order defines temporal order; DAG derived by per-qubit serialization:
+#   g0=(0,1) -> g1=(1,2) (share q1) -> g2=(0,1) (shares q1 with g1, q0 with g0)
+name: golden_micro_1
+kind: explicit
+num_qubits: 3
+gates:
+  - [0, 1]
+  - [1, 2]
+  - [0, 1]
