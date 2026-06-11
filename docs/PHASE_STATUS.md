@@ -6,11 +6,14 @@
 
 ## Current state
 
-- **Current phase**: Phase 1B (stochastic layer) — starting
-- **Last completed step**: Phase 1A closed (62 tests green, golden micros
-  matched exactly, cross-process determinism verified)
-- **Exact next step**: CRN engine (`eager/env/crn.py`) + stochastic resolve +
-  Phase 1B acceptance tests
+- **Current phase**: Phases 0, 1A, 1B ALL COMPLETE (bootstrap session done,
+  2026-06-11). Next authorized phase: Phase 2 (GreedyJIT + Random +
+  trace recorder) — requires a NEW session authorization per guide §11.
+- **Last completed step**: Phase 1B acceptance (10x repeat ALL STABLE;
+  clean-state verification OVERALL PASS); self-audit table below
+- **Exact next step**: Phase 2, when authorized: GreedyJIT expert as an
+  env-API policy (METIS-style partition + criticality list scheduling + JIT
+  provisioning), Random-Progressive, trace recorder (guide §9.1, §9.5, §11)
 - **Blockers**: none
 
 ## Session authorization
@@ -163,4 +166,164 @@ visible at micro scale.
 
 ## Phase 1B — Stochastic layer
 
-Status: not started.
+Status: COMPLETE (2026-06-11). Tagged `phase-1b-done`.
+
+Scope delivered: counter-based CRN engine (`eager/env/crn.py`, numpy Philox;
+`uniform(l,c,t)` pure in (seed,l,c,t)); Bernoulli generate-until-success
+channels (D7); buffer aging + T_cut expiry -> waste accounting (charged once,
+on the resolving ADVANCE); buffer-overflow-safe GenEPR masking incl. in-flight
+pairs (1A code, 1B-tested); env-level `auto_jit` flag (guide §9.7, default
+OFF) with negative control; deterministic mode retained as a config switch and
+anchored by the stochastic-p=1 == deterministic-t_ep=1 trajectory-equivalence
+test.
+
+### Acceptance evidence (2026-06-11)
+
+Full suite after 1B: `91 passed in 8.09s`.
+
+#### Flaky-bug protocol: stochastic suite repeated 10x (per-test pass counts)
+
+`python scripts/run_repeat_suite.py --runs 10 --marker stochastic`:
+
+```
+run  1/10: 29/29 passed
+run  2/10: 29/29 passed
+run  3/10: 29/29 passed
+run  4/10: 29/29 passed
+run  5/10: 29/29 passed
+run  6/10: 29/29 passed
+run  7/10: 29/29 passed
+run  8/10: 29/29 passed
+run  9/10: 29/29 passed
+run 10/10: 29/29 passed
+
+test                                                                                                  pass_count
+----------------------------------------------------------------------------------------------------------------
+tests.integration.test_auto_jit::test_auto_jit_completes_map_schedule_only_policy                     10/10
+tests.integration.test_auto_jit::test_auto_jit_respects_channel_and_buffer_limits                     10/10
+tests.integration.test_auto_jit::test_without_auto_jit_same_policy_truncates                          10/10
+tests.integration.test_crn_policies::test_different_seed_changes_luck                                 10/10
+tests.integration.test_crn_policies::test_identical_draws_at_identical_coordinates                    10/10
+tests.integration.test_crn_policies::test_same_policy_same_seed_identical_log                         10/10
+tests.integration.test_determinism_process::test_two_process_invocations_identical_stochastic         10/10
+tests.integration.test_expiry::test_conservation_with_interleaved_expiry_and_consumption              10/10
+tests.integration.test_expiry::test_expiry_golden_derivation                                          10/10
+tests.integration.test_expiry::test_pair_consumable_on_last_window_slot                               10/10
+tests.integration.test_expiry::test_pair_gone_one_slot_after_window                                   10/10
+tests.integration.test_invariants::test_stochastic_jit_policy_invariants_with_expiry[p083_cut20]      10/10
+tests.integration.test_invariants::test_stochastic_jit_policy_invariants_with_expiry[p30_cut2_tight]  10/10
+tests.integration.test_invariants::test_stochastic_jit_policy_invariants_with_expiry[p50_cut1_w1b1]   10/10
+tests.integration.test_invariants::test_stochastic_random_policy_invariants[0]                        10/10
+tests.integration.test_invariants::test_stochastic_random_policy_invariants[1]                        10/10
+tests.statistical.test_crn_frequency::test_frequency_across_links_and_channels                        10/10
+tests.statistical.test_crn_frequency::test_success_frequency_within_99ci[0.05]                        10/10
+tests.statistical.test_crn_frequency::test_success_frequency_within_99ci[0.08333333333333333]        10/10
+tests.statistical.test_crn_frequency::test_success_frequency_within_99ci[0.3]                         10/10
+tests.unit.test_crn::test_coordinate_separation                                                       10/10
+tests.unit.test_crn::test_different_seeds_differ_somewhere                                            10/10
+tests.unit.test_crn::test_input_validation                                                            10/10
+tests.unit.test_crn::test_large_seed_supported                                                        10/10
+tests.unit.test_crn::test_query_order_independence                                                    10/10
+tests.unit.test_crn::test_same_seed_same_draws_across_engines                                         10/10
+tests.unit.test_crn::test_uniform_range_and_threshold_semantics                                       10/10
+tests.unit.test_det_equiv::test_deterministic_mode_still_available_with_cutoff_inf                    10/10
+tests.unit.test_det_equiv::test_stochastic_p1_equals_deterministic_tep1                               10/10
+
+verdict: ALL STABLE (29 tests x 10 runs)
+```
+
+Notes on the acceptance map:
+- CRN property tests: `tests/unit/test_crn.py` (order independence, engine
+  agreement, seed separation) + `tests/integration/test_crn_policies.py`
+  (two DIFFERENT scripted policies, same seed -> identical draws at identical
+  (l,c,t); link-0 draw logs identical; extra activity on another link does
+  not perturb shared coordinates).
+- Statistical test: `tests/statistical/test_crn_frequency.py`, >=1e5 draws
+  per p in {0.05, 1/12, 0.3}, |p_hat - p| within the 99% normal CI.
+- Conservation including expiry: asserted after EVERY micro-action by
+  `tests/util_invariants.py` across stochastic cases with tight cutoffs
+  (T_cut in {1, 2, 20}), plus interleaved consume/expire test.
+- Aging/expiry golden test: `tests/integration/test_expiry.py::
+  test_expiry_golden_derivation` — pair generated at slot 0, T_cut=3,
+  discarded exactly at the resolve of slot 3, charged exactly once
+  (ADVANCE reward -1.5 = -alpha - gamma*w), J = 5.5 matched exactly; window
+  edges: consumable at slot t+T_cut, gone at t+T_cut+1.
+- auto_jit smoke: Map+Schedule-only policy completes a remote-gate instance
+  with auto_jit=ON, zero truncation; negative control truncates with
+  auto_jit=OFF and generated==0 (D26).
+
+#### Clean-state verification (fresh clone + fresh venv)
+
+`python scripts/clean_state_verify.py` (episode script BEFORE pytest ->
+pytest -> episode script again; file-tree snapshot diff):
+
+```
+clean-state workdir: C:\Users\jcshe\AppData\Local\Temp\eager_clean_enoteo8w
+installing into fresh venv ...
+
+=== episode runs BEFORE pytest ===
+episode hardware=k2_line circuit=golden_micro_1 seed=0 policy=jit mode=stochastic auto_jit=False
+T=3 C_comm=0 C_waste=0 J=3 truncated=False
+pairs generated=0 consumed=0 expired=0 stored=0
+epr_utilization=None mean_remote_stall=None
+reward_sum=-3 micro_steps=9
+trajectory_sha256=4e0bf86db49661a1cb91232f70b3fcebf5dd5caa8fd086f4cbe4d03417aee718
+episode hardware=golden_k2_det circuit=golden_micro_2 seed=1 policy=jit mode=deterministic auto_jit=False
+T=5 C_comm=2 C_waste=0 J=7 truncated=False
+pairs generated=2 consumed=2 expired=0 stored=0
+epr_utilization=1 mean_remote_stall=2
+reward_sum=-7 micro_steps=15
+trajectory_sha256=611fda0b4ad8699108d82c763e29fbca2f103bc284937209adf7ea7903281008
+
+=== pytest (fresh clone) ===
+........................................................................ [ 79%]
+...................                                                      [100%]
+91 passed in 9.81s
+
+=== episode runs AFTER pytest ===
+episode hardware=k2_line circuit=golden_micro_1 seed=0 policy=jit mode=stochastic auto_jit=False
+T=3 C_comm=0 C_waste=0 J=3 truncated=False
+pairs generated=0 consumed=0 expired=0 stored=0
+epr_utilization=None mean_remote_stall=None
+reward_sum=-3 micro_steps=9
+trajectory_sha256=4e0bf86db49661a1cb91232f70b3fcebf5dd5caa8fd086f4cbe4d03417aee718
+episode hardware=golden_k2_det circuit=golden_micro_2 seed=1 policy=jit mode=deterministic auto_jit=False
+T=5 C_comm=2 C_waste=0 J=7 truncated=False
+pairs generated=2 consumed=2 expired=0 stored=0
+epr_utilization=1 mean_remote_stall=2
+reward_sum=-7 micro_steps=15
+trajectory_sha256=611fda0b4ad8699108d82c763e29fbca2f103bc284937209adf7ea7903281008
+
+=== clean-state verdict ===
+pytest green:               PASS
+no test pollution:          PASS
+episode outputs identical:  PASS
+OVERALL: PASS
+```
+
+(Note on the first episode: with k2_line's ample kappa=12 the first-fit demo
+policy co-locates all three qubits on QPU 0, so golden_micro_1 runs all-local
+with zero pair traffic — correct behavior; placement pressure requires kappa
+scarcity, which the experiment configs of later phases impose.)
+
+---
+
+## Session self-audit (2026-06-11) — Phases 0 + 1A + 1B
+
+| # | Acceptance criterion | Verdict | Evidence |
+|---|---|---|---|
+| 0.1 | Fresh clone + fresh env + install + pytest green + smoke works | PASS | Phase 0 fresh-clone block (23 passed; smoke OK); re-confirmed post-1B by clean-state run (91 passed) |
+| 1A.1 | Invariants: DAG precedence never violated; capacity never exceeded; pair conservation `generated == consumed + stored` after every slot | PASS | tests/util_invariants.py asserted after EVERY micro-action; tests/integration/test_invariants.py (jit + random policies, K in {2,3,4}) |
+| 1A.2 | TWO golden micro-instances, hand derivation in comments, scripted sequence matches makespan/C_comm/J EXACTLY | PASS | tests/integration/test_golden_micro.py: micro1 T=5, C_comm=1, J=6; micro2 T=5, C_comm=2, J=7; reward_sum == -J |
+| 1A.3 | Same (config, seed, actions) -> identical trajectory hash across two separate process invocations | PASS | tests/integration/test_determinism_process.py (subprocess x2, byte-identical stdout incl. sha256) |
+| 1B.1 | CRN: same (seed,l,c,t) -> same draw regardless of query order; two different scripted policies under same seed see identical draws at identical coords | PASS | tests/unit/test_crn.py; tests/integration/test_crn_policies.py |
+| 1B.2 | Empirical frequency within 99% CI of p over >=1e5 draws, p in {0.05, 1/12, 0.3} | PASS | tests/statistical/test_crn_frequency.py |
+| 1B.3 | Conservation incl. expiry every slot | PASS | stochastic invariant cases (T_cut in {1,2,20}) + test_expiry conservation test |
+| 1B.4 | Aging/expiry golden: discarded exactly at the right slot, charged once | PASS | test_expiry_golden_derivation (expiry at resolve of slot t+T_cut; ADVANCE reward -1.5 once; J=5.5 exact) |
+| 1B.5 | auto_jit smoke: ON + Map+Schedule-only completes without truncation | PASS | tests/integration/test_auto_jit.py (+ OFF negative control truncates, D26) |
+| 1B.6 | Flaky-bug protocol: stochastic suite 10x, pass counts per test, 10/10 required | PASS | repeat table above: 29 tests x 10 runs, ALL STABLE |
+| 1B.7 | Clean-state verification: episode BEFORE pytest -> pytest -> episode again, identical; tests write only to tmp | PASS | clean_state_verify output above: OVERALL PASS |
+| P.1 | DESIGN_DECISIONS.md contains D1-D9 + session decisions | PASS | docs/DESIGN_DECISIONS.md D1-D27 |
+| P.2 | Lineage (§2.3) + double-blind (§2.4) sweeps clean outside canonical guide | PASS | `git grep -i -E "<terms>" -- . ':!docs/guide.md'` -> no matches |
+| P.3 | Tags phase-0-done / phase-1a-done / phase-1b-done pushed | PASS | git log / remote refs |
+| P.4 | Phase 2+ NOT started | PASS | no baselines/, model/, train/, exact/ code; only D20 demo helpers |
