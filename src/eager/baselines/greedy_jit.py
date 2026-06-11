@@ -40,18 +40,28 @@ def compute_placement(instance: CircuitInstance, hardware: HardwareConfig,
 class GreedyJITPolicy:
     """Callable policy: action = policy(env). The placement is computed once
     per policy instance (static placement, A2) and reused across episodes of
-    the same env config."""
+    the same env config.
 
-    name = "greedy_jit"
+    ``placement_fn(instance, hardware) -> list[int]`` swaps the placement
+    stage only (used by MHSA+LS and AGG, §9.2/§9.3), so every placement
+    baseline shares the identical list-scheduling + JIT-provisioning loop and
+    comparisons isolate placement quality."""
 
-    def __init__(self, placement_seed: int = 0):
+    def __init__(self, placement_seed: int = 0, placement_fn=None,
+                 name: str = "greedy_jit"):
         self.placement_seed = placement_seed
+        self.placement_fn = placement_fn
+        self.name = name
         self._placement: list[int] | None = None
 
     def __call__(self, env: EagerEnv) -> Action:
         if self._placement is None:
-            self._placement = compute_placement(
-                env.instance, env.hardware, self.placement_seed)
+            if self.placement_fn is not None:
+                self._placement = list(self.placement_fn(env.instance,
+                                                         env.hardware))
+            else:
+                self._placement = compute_placement(
+                    env.instance, env.hardware, self.placement_seed)
 
         # 1. placement
         for q in sorted(env._unmapped):

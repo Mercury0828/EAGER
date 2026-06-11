@@ -52,4 +52,84 @@ Template per baseline:
   circuits — characterized in PHASE_STATUS Phase 2 and escalated; the paper
   must present it accordingly.
 
-*(published-style baselines MHSA+LS / AGG / DDQN-flat arrive in Phase 3)*
+## MHSA+LS (home-venue anchor: Mao, Liu & Yang, "Qubit Allocation for
+## Distributed Quantum Computing", IEEE INFOCOM 2023)
+
+- **Source method**: the paper's multistage hybrid simulated annealing (MHSA)
+  algorithm for the qubit-allocation problem (QA-DQC) — a local-search
+  heuristic hybridized with simulated annealing, minimizing remote-gate
+  count under per-QPU capacities.
+- **Public artifact checked**: none found for the INFOCOM'23 paper; the full
+  text is IEEE-paywalled in this environment. Implemented from the paper's
+  published abstract/structure plus the guide §9.2 specification; fidelity
+  level disclosed as "MHSA-style" in the paper.
+- **Faithful parts**: objective (remote-gate count = gate-weighted
+  interaction-graph cut) under capacity constraints; hybrid structure =
+  greedy initialization + SA + local-search descent; multistage = 4 stages,
+  each an SA sweep (capacity-feasible single moves + pairwise swaps,
+  within-stage geometric cooling from a sampled initial temperature, halved
+  between stages) followed by a first-improvement local-search descent.
+- **Adaptations**: stage count (4), proposal budget (20,000, fixed and
+  reported with results), cooling constants — paper values unavailable,
+  chosen once and frozen; placement is then paired with the §9.1 list
+  scheduler + JIT provisioning (via GreedyJITPolicy.placement_fn) so
+  MHSA-vs-GreedyJIT isolates placement quality, per the guide.
+- **Budget/fairness**: deterministic given seed; same evaluation seeds as
+  every other method (CRN); budget reported in results/index.json.
+
+## AGG (top-venue anchor: Wu et al., "AutoComm", MICRO 2022)
+
+- **Source method**: AutoComm's communication aggregation — extract burst
+  communication (consecutive remote gates between the same node pair sharing
+  a source qubit) and serve each burst with ONE cat-comm channel.
+- **Public artifact checked**: YES — github.com/anbangw/AutoComm (reference
+  implementation; inspected 2026-06-11). Burst detection follows its
+  `consecutive_merge` stage: maximal runs of remote gates between the same
+  QPU pair sharing one operand, consecutive in the shared qubit's gate
+  sequence. Their latency table (EP=12 vs CX=1) independently matches this
+  project's t_ep ~= 12 x CX calibration (guide §4.5).
+- **Faithful parts**: consecutive-run burst detection on the shared qubit;
+  cat-comm cost shape: a k-gate burst costs ONE pair (per route link) +
+  d_rem + (k-1)*d_loc slots (their EP + local gates), vs k pairs and
+  k*d_rem unaggregated; controlled comparison on the SAME placement and the
+  SAME §9.1 scheduler as GreedyJIT.
+- **Adaptations / deviations (each forced by our model, D40)**:
+  (1) no commutation-based block extension (their `linear_merge_iter`):
+  our DAG is serialization-frozen by definition (§4.1/D30), so only
+  chain-consecutive runs aggregate — this UNDERSTATES AutoComm's gains;
+  (2) no TP-comm branch (A2/A6: cat-comm only in v1);
+  (3) CNOT direction is abstract in 2q skeletons, so burst sharing is
+  side-agnostic (their cat/tp tagging keys on control/target sides);
+  (4) bursts break when the head's partner reappears as the other operand
+  (the local rewrite (x1,x1) would be degenerate);
+  (5) the shared qubit is released after the burst head completes rather
+  than after disentangle, and bursts to different targets may overlap
+  (one-to-many cat copies — present in AutoComm's one-to-many burst forms);
+  affects T only, never pair counts;
+  (6) implementation = placement-aware instance transform (burst tails
+  rewritten as local gates anchored at the head's partner), executed by the
+  unmodified env — no per-method cost code (guide §12).
+- **Structural note**: QASMBench's chain-form ghz/cat are burst-FREE in this
+  model under min-cut placement (isolated remote gates); AutoComm's
+  ghz-class gains presume fan-out/commutation forms. A constructed fan-out
+  GHZ instance (ghz_fanout_n78) carries the §11 acceptance signal instead.
+
+## DDQN-flat (learning anchor, ICC'25-style)
+
+- **Source method**: ICC'25-style flat-state Double DQN compiler baseline
+  (guide §9.4): Double DQN + target network + uniform replay over a flat
+  fixed-size state with the same action space, max-size masks, trained per
+  configuration.
+- **Public artifact checked**: not applicable at this phase (training runs
+  in Phase 6 with EAGER-PPO-matched env-step budgets; this phase ships the
+  implementation).
+- **Faithful parts**: flat state = per-QPU loads + per-link
+  [stored, busy, free, p] + top-k=8 ready-gate features + globals,
+  zero-padded; SAME D15 action enumeration with boolean masks (masked
+  argmax everywhere, including the Double-DQN target's argmax); epsilon-
+  greedy; Huber loss; gradient clipping; periodic target sync.
+- **Adaptations**: feature normalizations and network width (256x256 MLP)
+  chosen once; per-config sizing derived from the bound env.
+- **Budget/fairness**: Phase 6 trains with the same env-step budget as
+  EAGER's PPO phase; agent RNG (torch/numpy) seeded separately from the env
+  CRN.

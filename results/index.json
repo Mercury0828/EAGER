@@ -9,6 +9,7 @@
       "bv_n70",
       "cat_n65",
       "dnn_n51",
+      "ghz_fanout_n78",
       "ghz_n78",
       "ising_n98",
       "multiplier_n45",
@@ -30,5 +31,21 @@
       3,
       4
     ]
+  },
+  "phase3_agg": {
+    "crn_paired": true,
+    "path": "phase3_agg.parquet",
+    "placement": "shared with greedy_jit (seed 0)",
+    "seeds": [
+      0,
+      1,
+      2
+    ]
+  },
+  "phase3_mhsa": {
+    "mhsa_budget": 20000,
+    "panel": "14 frozen panel circuits + 6 seeded synthetics",
+    "path": "phase3_mhsa.parquet",
+    "placement_seed": 0
   }
 }

@@ -13,13 +13,17 @@ import sys
 from pathlib import Path
 
 from eager.expgen.qasm_skeleton import instance_from_qasm
-from eager.expgen.synthetic import generate_layered_random_instance
+from eager.expgen.synthetic import (
+    generate_fanout_instance,
+    generate_layered_random_instance,
+)
 
 REPO = Path(__file__).resolve().parent.parent
 QASM_DIR = REPO / "qasm" / "qasmbench"
 OUT_DIR = REPO / "configs" / "circuits" / "qasmbench"
 
 SUPREMACY = {"num_qubits": 120, "num_layers": 10, "seed": 2027}
+FANOUT_N = 78
 
 
 def write_instance_yaml(inst, out_path: Path, source_note: str) -> None:
@@ -53,6 +57,13 @@ def main() -> int:
             f"seed={SUPREMACY['seed']} (guide §10.1; not a QASMBench file)")
     write_instance_yaml(sup, OUT_DIR / f"{sup.name}.yaml", note)
     rows.append((sup.name, sup.num_qubits, sup.num_gates, sup.depth))
+
+    fan = generate_fanout_instance(FANOUT_N)
+    note = ("constructed fan-out GHZ preparation (star: gates (0,i)); "
+            "burst-carrying counterpart of the chain-form ghz/cat files "
+            "(D40; not a QASMBench file)")
+    write_instance_yaml(fan, OUT_DIR / f"{fan.name}.yaml", note)
+    rows.append((fan.name, fan.num_qubits, fan.num_gates, fan.depth))
 
     width = max(len(r[0]) for r in rows)
     print(f"{'instance':<{width}}  {'N':>4}  {'M':>6}  {'depth':>5}")

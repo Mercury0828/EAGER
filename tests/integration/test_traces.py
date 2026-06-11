@@ -53,8 +53,11 @@ def test_tampered_trace_detected():
     trace = record_episode(env, GreedyJITPolicy(placement_seed=0), seed=0)
     tampered = dict(trace)
     tampered["actions"] = list(trace["actions"])
-    tampered["actions"][len(tampered["actions"]) // 2] = (
-        env.action_space.size - 1)              # swap a mid-episode action
+    advance_idx = env.action_space.size - 1
+    # tamper the first mid-episode action that is NOT already an ADVANCE
+    pos = next(i for i, a in enumerate(tampered["actions"])
+               if a != advance_idx and i > 0)
+    tampered["actions"][pos] = advance_idx
     try:
         verdict = replay_episode(env, tampered)
         assert not verdict["match"]

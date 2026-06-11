@@ -35,6 +35,21 @@ def generate_instance(params: SynthParams, seed: int,
     return instance_from_gates(f"{label}_s{seed}", params.num_qubits, gates)
 
 
+def generate_fanout_instance(num_qubits: int, name: str | None = None
+                             ) -> CircuitInstance:
+    """Fan-out (star) entangling circuit: gates (q0, qi) for i = 1..N-1.
+
+    The fan-out form of GHZ-state preparation (one root interacting with
+    every other qubit). Unlike QASMBench's chain-form ghz/cat files — which
+    are burst-free in our serialization model under min-cut placement — the
+    fan-out form carries genuine burst-communication structure (runs of
+    remote gates sharing the root), which is what the Autocomm-style
+    aggregation baseline exploits (guide §9.3, D40)."""
+    gates = tuple((0, i) for i in range(1, num_qubits))
+    return instance_from_gates(name or f"ghz_fanout_n{num_qubits}",
+                               num_qubits, gates)
+
+
 def generate_layered_random_instance(num_qubits: int, num_layers: int,
                                      seed: int, name: str | None = None
                                      ) -> CircuitInstance:

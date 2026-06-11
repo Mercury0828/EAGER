@@ -99,7 +99,12 @@ def main(argv: list[str] | None = None) -> int:
 
     qasm_commit = (REPO / "qasm" / "qasmbench" / "SOURCE_COMMIT.txt"
                    ).read_text().strip()
-    index = {"phase2_panel": {
+    index_path = RESULTS / "index.json"
+    index = {}
+    if index_path.exists():
+        with open(index_path, "r", encoding="utf-8") as fh:
+            index = json.load(fh)
+    index.update({"phase2_panel": {
         "path": "phase2_panel.parquet",
         "instances": sorted(df["instance"].unique().tolist()),
         "seeds": list(range(args.seeds)),
@@ -108,8 +113,8 @@ def main(argv: list[str] | None = None) -> int:
                     "T_cut=20, w=1, stochastic",
         "qasmbench_commit": qasm_commit,
         "crn_paired": True,
-    }}
-    with open(RESULTS / "index.json", "w", encoding="utf-8") as fh:
+    }})
+    with open(index_path, "w", encoding="utf-8") as fh:
         json.dump(index, fh, indent=2, sort_keys=True)
     print(f"results -> {RESULTS / 'phase2_panel.parquet'} (+ index.json)")
 

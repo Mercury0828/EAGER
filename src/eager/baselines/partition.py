@@ -58,10 +58,14 @@ def balanced_partition(num_items: int, caps: list[int],
 
     for q in order:
         candidates = [u for u in range(k) if load[u] < caps[u]]
-        # max affinity to already-placed neighbors; tie -> most residual
-        # capacity; tie -> lowest part id (all deterministic)
-        best = max(candidates,
-                   key=lambda u: (part_affinity(q, u), caps[u] - load[u], -u))
+        # max affinity to already-placed neighbors; tie -> LOWEST part id
+        # with room (sequential fill). The tie-break is cut-neutral but not
+        # burst-neutral: most-residual round-robins zero-affinity qubits
+        # across parts, shredding the consecutive remote runs that
+        # Autocomm-style aggregation consumes; sequential fill matches the
+        # contiguous-register-split mapping convention of the DQC
+        # literature (D41).
+        best = max(candidates, key=lambda u: (part_affinity(q, u), -u))
         assign[q] = best
         load[best] += 1
 

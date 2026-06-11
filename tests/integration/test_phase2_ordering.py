@@ -15,24 +15,28 @@ from eager.expgen.hardware import default_panel_hardware
 
 pytestmark = pytest.mark.stochastic
 
-SEEDS = [0, 1, 2]
+SEEDS = [0, 1, 2, 3, 4]          # matches the panel protocol (5 CRN seeds)
 
-# Known regime exceptions at the default p=1/12 (D35): on provisioning-
-# throughput-bound serialized circuits, Random-Progressive's ADVANCE-only-
-# when-forced semantics make it an accidental always-on (maximally proactive)
-# provisioner, and reactive JIT cannot hide the ~1/(2p)-slot generation
-# latency per serialized remote gate. strict=True keeps the finding visible:
-# if the regime flips, the xfail FAILS loudly and D35 must be revisited.
-REGIME_EXCEPTIONS = {"qaoa_n6", "bv_n30"}
+# Known regime exceptions at the default p=1/12 (D35/D38/D43): on
+# provisioning-throughput-bound serialized circuits, Random-Progressive's
+# ADVANCE-only-when-forced semantics make it an accidental always-on
+# (maximally proactive) provisioner, and reactive JIT cannot hide the
+# ~1/(2p)-slot generation latency per serialized remote gate. strict=True
+# keeps the finding visible: if the regime flips, the xfail FAILS loudly and
+# the set must be re-measured — exactly what happened when the D41
+# sequential-fill tie-break landed (bv_n30 and qaoa_n6 left the set;
+# ghz_fanout_n78 entered it; qft_n63 remains but is too slow for the test
+# subset — the panel covers it).
+REGIME_EXCEPTIONS = {"ghz_fanout_n78"}
 
 CASES = [
     pytest.param(stem,
                  marks=pytest.mark.xfail(
                      strict=True,
-                     reason="D35 regime finding: provisioning-throughput-bound "
-                            "at default p=1/12; escalated in PHASE_STATUS")
+                     reason="D35/D43 regime finding: provisioning-throughput-"
+                            "bound at default p=1/12; see PHASE_STATUS")
                  if stem in REGIME_EXCEPTIONS else ())
-    for stem in ["adder_n4", "qaoa_n6", "bv_n30"]
+    for stem in ["adder_n4", "qaoa_n6", "bv_n30", "ghz_fanout_n78"]
 ]
 
 
