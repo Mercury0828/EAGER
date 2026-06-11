@@ -1,0 +1,16 @@
+# extracted 2q skeleton from QASMBench adder_n4.qasm @ 357b942396d5 (see qasm/README.md)
+# N=4 qubits, M=10 two-qubit gates, depth=6
+name: adder_n4
+kind: explicit
+num_qubits: 4
+gates:
+  - [2, 3]
+  - [0, 1]
+  - [2, 3]
+  - [3, 0]
+  - [1, 2]
+  - [0, 1]
+  - [2, 3]
+  - [0, 1]
+  - [2, 3]
+  - [3, 0]

@@ -30,10 +30,15 @@ def run_once(marker: str, xml_path: Path) -> dict[str, str]:
     root = ET.parse(xml_path).getroot()
     for case in root.iter("testcase"):
         name = f"{case.attrib['classname']}::{case.attrib['name']}"
+        skipped = case.find("skipped")
         if case.find("failure") is not None or case.find("error") is not None:
             outcomes[name] = "FAIL"
-        elif case.find("skipped") is not None:
-            outcomes[name] = "SKIP"
+        elif skipped is not None:
+            # strict xfail is an EXPECTED outcome: stable iff it xfails N/N
+            if skipped.attrib.get("type") == "pytest.xfail":
+                outcomes[name] = "XFAIL"
+            else:
+                outcomes[name] = "SKIP"
         else:
             outcomes[name] = "PASS"
     return outcomes
@@ -55,20 +60,28 @@ def main(argv: list[str] | None = None) -> int:
                 return 2
             for name, outcome in outcomes.items():
                 per_test[name].append(outcome)
-            n_pass = sum(1 for o in outcomes.values() if o == "PASS")
-            print(f"run {i + 1:2d}/{args.runs}: {n_pass}/{len(outcomes)} passed")
+            n_pass = sum(1 for o in outcomes.values() if o in ("PASS", "XFAIL"))
+            print(f"run {i + 1:2d}/{args.runs}: {n_pass}/{len(outcomes)} as expected")
 
     width = max(len(n) for n in per_test)
-    print(f"\n{'test':<{width}}  pass_count")
-    print("-" * (width + 12))
+    print(f"\n{'test':<{width}}  expected_outcome_count")
+    print("-" * (width + 24))
     all_ok = True
     for name in sorted(per_test):
         outcomes = per_test[name]
-        n_pass = sum(1 for o in outcomes if o == "PASS")
-        flag = "" if n_pass == args.runs else "   <-- NOT STABLE"
-        if n_pass != args.runs:
+        kinds = set(outcomes)
+        # stable = the SAME expected outcome (PASS or strict XFAIL) every run
+        if kinds == {"PASS"}:
+            label = f"{len(outcomes)}/{args.runs} PASS"
+        elif kinds == {"XFAIL"}:
+            label = f"{len(outcomes)}/{args.runs} XFAIL(strict, expected)"
+        else:
+            label = "/".join(outcomes)
             all_ok = False
-        print(f"{name:<{width}}  {n_pass}/{args.runs}{flag}")
+        flag = "" if all_ok or kinds in ({"PASS"}, {"XFAIL"}) else "   <-- NOT STABLE"
+        if kinds not in ({"PASS"}, {"XFAIL"}):
+            flag = "   <-- NOT STABLE"
+        print(f"{name:<{width}}  {label}{flag}")
 
     print(f"\nverdict: {'ALL STABLE' if all_ok else 'UNSTABLE TESTS PRESENT'} "
           f"({len(per_test)} tests x {args.runs} runs)")

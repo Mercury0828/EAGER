@@ -33,3 +33,19 @@ def generate_instance(params: SynthParams, seed: int,
     gates = generate_gates(params.num_qubits, params.num_gates, rng)
     label = name or f"synthetic_n{params.num_qubits}_m{params.num_gates}"
     return instance_from_gates(f"{label}_s{seed}", params.num_qubits, gates)
+
+
+def generate_layered_random_instance(num_qubits: int, num_layers: int,
+                                     seed: int, name: str | None = None
+                                     ) -> CircuitInstance:
+    """Supremacy-style random circuit (guide §10.1): each layer applies a
+    random perfect matching of two-qubit gates over all qubits, so every
+    qubit acts once per layer and the DAG depth equals the layer count."""
+    rng = np.random.default_rng(seed)
+    gates: list[tuple[int, int]] = []
+    for _ in range(num_layers):
+        perm = rng.permutation(num_qubits)
+        for i in range(0, num_qubits - 1, 2):
+            gates.append((int(perm[i]), int(perm[i + 1])))
+    label = name or f"supremacy_n{num_qubits}"
+    return instance_from_gates(label, num_qubits, tuple(gates))

@@ -120,6 +120,16 @@ class EagerEnv:
                       channels=[ChannelState() for _ in range(lc.W)])
             for lc in self.hardware.links
         ]
+        # Incremental index structures (performance only — pure derivatives of
+        # the gate/qubit state above; semantics defined by _invalid_reason):
+        m = self.instance.num_gates
+        self._ready: set[int] = {g for g in range(m)
+                                 if self.gates[g].n_unfinished_preds == 0}
+        self._running: set[int] = set()
+        self._unmapped: set[int] = set(range(self.instance.num_qubits))
+        self._c_state: list[int] = [UNSCHEDULED] * m
+        self._c_remaining: list[int] = [0] * m
+        self._c_ready: list[int] = [1 if g in self._ready else 0 for g in range(m)]
         self.draw_log: dict[tuple[int, int, int], bool] = {}
         self._crn = None
         if not self.hardware.deterministic:
@@ -161,16 +171,19 @@ class EagerEnv:
         """Valid micro-actions in the fixed enumeration order (D15)."""
         out: list[Action] = []
         if self._is_reset and not self.done:
-            for q in range(self.instance.num_qubits):
-                if self.qubit_qpu[q] is None:
-                    out.extend(Map(q, u) for u in range(self.hardware.num_qpus)
-                               if self.kappa_res[u] > 0)
-            out.extend(Schedule(g) for g in range(self.instance.num_gates)
+            for q in sorted(self._unmapped):
+                out.extend(Map(q, u) for u in range(self.hardware.num_qpus)
+                           if self.kappa_res[u] > 0)
+            out.extend(Schedule(g) for g in sorted(self._ready)
                        if self._invalid_reason(Schedule(g)) is None)
             out.extend(GenEPR(l) for l in range(self.hardware.num_links)
                        if self._invalid_reason(GenEPR(l)) is None)
             out.append(ADVANCE)
         return out
+
+    def ready_gates(self) -> list[int]:
+        """Gate ids that are unscheduled with all predecessors DONE."""
+        return sorted(self._ready)
 
     def valid_action_mask(self) -> np.ndarray:
         mask = np.zeros(self.action_space.size, dtype=bool)
@@ -182,9 +195,13 @@ class EagerEnv:
         return episode_metrics(self)
 
     def link_deficits(self) -> list[int]:
-        """Per-link pair deficit of ready-but-blocked remote gates (§9.1(3))."""
-        deficits, _ = self._deficit_demand()
-        return deficits
+        """Per-link net pair deficit (blocked demand minus stored minus
+        in-flight) of ready-but-blocked remote gates."""
+        demand, _ = self._deficit_demand()
+        return [
+            max(0, demand[l] - self.links[l].stored - self.links[l].busy_channels)
+            for l in range(self.hardware.num_links)
+        ]
 
     # ------------------------------------------------------------ validity
 
@@ -240,6 +257,7 @@ class EagerEnv:
     def _apply_map(self, q: int, u: int) -> None:
         self.qubit_qpu[q] = u
         self.kappa_res[u] -= 1
+        self._unmapped.discard(q)
         for g in self._qubit_gates[q]:
             gr = self.gates[g]
             if gr.remote is None:
@@ -265,6 +283,11 @@ class EagerEnv:
         gr.state = RUNNING
         gr.remaining = self.params.d_rem if gr.remote else self.params.d_loc
         gr.schedule_slot = self.t
+        self._ready.discard(g)
+        self._running.add(g)
+        self._c_state[g] = RUNNING
+        self._c_remaining[g] = gr.remaining
+        self._c_ready[g] = 0
         return reward
 
     def _task_channel(self, l: int) -> None:
@@ -302,17 +325,22 @@ class EagerEnv:
                     ch.remaining = 0
 
         # (2) running gates advance; completions update the ready set
-        for gid, gr in enumerate(self.gates):
-            if gr.state == RUNNING:
-                gr.remaining -= 1
-                if gr.remaining == 0:
-                    gr.state = DONE
-                    self.done_count += 1
-                    for s in self.instance.succs[gid]:
-                        sg = self.gates[s]
-                        sg.n_unfinished_preds -= 1
-                        if sg.n_unfinished_preds == 0:
-                            sg.ready_slot = t + 1
+        for gid in sorted(self._running):
+            gr = self.gates[gid]
+            gr.remaining -= 1
+            self._c_remaining[gid] = gr.remaining
+            if gr.remaining == 0:
+                gr.state = DONE
+                self._c_state[gid] = DONE
+                self._running.discard(gid)
+                self.done_count += 1
+                for s in self.instance.succs[gid]:
+                    sg = self.gates[s]
+                    sg.n_unfinished_preds -= 1
+                    if sg.n_unfinished_preds == 0:
+                        sg.ready_slot = t + 1
+                        self._ready.add(s)
+                        self._c_ready[s] = 1
 
         # (3) aging and decoherence cutoff
         for lid, ls in enumerate(self.links):
@@ -350,13 +378,19 @@ class EagerEnv:
 
     # ------------------------------------------------------------- auto-JIT
 
+    def deficit_demand(self) -> tuple[list[int], list[int | None]]:
+        """§9.1(3) deficit registration: per-link blocked demand (number of
+        ready remote gates lacking a pair on the link) and the max criticality
+        among the gates each link blocks (used by JIT-style policies;
+        auto_jit uses it internally)."""
+        return self._deficit_demand()
+
     def _deficit_demand(self) -> tuple[list[int], list[int | None]]:
         nl = self.hardware.num_links
         demand = [0] * nl
         max_crit: list[int | None] = [None] * nl
-        for gid, gr in enumerate(self.gates):
-            if gr.state != UNSCHEDULED or gr.n_unfinished_preds > 0:
-                continue
+        for gid in sorted(self._ready):
+            gr = self.gates[gid]
             if gr.remote is not True:
                 continue
             if all(self.links[l].stored >= 1 for l in gr.route):
@@ -366,39 +400,38 @@ class EagerEnv:
                 demand[l] += 1
                 if max_crit[l] is None or crit > max_crit[l]:
                     max_crit[l] = crit
-        deficits = [
-            max(0, demand[l] - self.links[l].stored - self.links[l].busy_channels)
-            for l in range(nl)
-        ]
-        return deficits, max_crit
+        return demand, max_crit
 
     def _auto_jit_provision(self) -> None:
-        """§9.1(3) JIT routine, applied when the agent yields the slot (D21)."""
-        deficits, max_crit = self._deficit_demand()
-        order = sorted((l for l in range(self.hardware.num_links) if deficits[l] > 0),
+        """§9.1(3) JIT routine, applied when the agent yields the slot: on
+        every link with blocked demand, issue GenEPR up to free channels /
+        buffer headroom (literal §9.1 saturation; D33 supersedes D21's
+        demand cap), links ordered by max blocked-gate criticality."""
+        demand, max_crit = self._deficit_demand()
+        order = sorted((l for l in range(self.hardware.num_links) if demand[l] > 0),
                        key=lambda l: (-(max_crit[l] or 0), l))
         for l in order:
             ls = self.links[l]
             lc = self.hardware.links[l]
-            n = min(deficits[l], ls.free_channels,
-                    lc.B - ls.stored - ls.busy_channels)
+            n = min(ls.free_channels, lc.B - ls.stored - ls.busy_channels)
             for _ in range(max(0, n)):
                 self._task_channel(l)
 
     # ------------------------------------------------------------ obs/info
 
     def _obs(self) -> dict:
-        """Integer-only structured snapshot (graph features arrive in Phase 5)."""
+        """Integer-only structured snapshot (graph features arrive in Phase 5).
+
+        Gate-indexed fields come from incrementally maintained caches (pure
+        copies; content identical to recomputing from self.gates — guarded by
+        tests/unit/test_env_obs_cache.py)."""
         return {
             "t": self.t,
             "qubit_qpu": [-1 if u is None else u for u in self.qubit_qpu],
             "kappa_res": list(self.kappa_res),
-            "gate_state": [g.state for g in self.gates],
-            "gate_remaining": [g.remaining for g in self.gates],
-            "gate_ready": [
-                int(g.state == UNSCHEDULED and g.n_unfinished_preds == 0)
-                for g in self.gates
-            ],
+            "gate_state": list(self._c_state),
+            "gate_remaining": list(self._c_remaining),
+            "gate_ready": list(self._c_ready),
             "links": [
                 {"stored_ages": list(l.stored_ages), "busy": l.busy_channels,
                  "free": l.free_channels}
