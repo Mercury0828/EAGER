@@ -836,8 +836,30 @@ Full suite after Phase 4: `152 passed, 1 xfailed in 11.20s`.
 
 ### 10x stochastic repeat (Phase 4)
 
-(pasted on completion)
+`python scripts/run_repeat_suite.py --runs 10 --marker stochastic` — the
+stochastic suite is unchanged by Phase 4 (MILP tests are deterministic and
+license-gated, hence unmarked); re-run for the protocol:
+
+```
+verdict: ALL STABLE (56 tests x 10 runs)
+```
+
+(per-test table identical in shape to the Phase 3 block above: 55 PASS
+10/10 + ghz_fanout_n78 ordering sentinel XFAIL(strict, expected) 10/10)
 
 ### Clean-state verification (Phase 4)
 
-(pasted on completion)
+`python scripts/clean_state_verify.py` (fresh clone + fresh venv incl.
+torch AND gurobipy; the MILP tests RAN in the fresh clone — the WLS license
+is user-level, so `152 passed, 1 xfailed` includes all Gurobi tests):
+
+```
+=== pytest (fresh clone) ===
+152 passed, 1 xfailed in 11.46s
+
+=== clean-state verdict ===
+pytest green:               PASS
+no test pollution:          PASS
+episode outputs identical:  PASS
+OVERALL: PASS
+```
