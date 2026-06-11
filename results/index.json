@@ -47,5 +47,11 @@
     "panel": "14 frozen panel circuits + 6 seeded synthetics",
     "path": "phase3_mhsa.parquet",
     "placement_seed": 0
+  },
+  "phase4_gap": {
+    "envelope": "golden micros (t_ep=2) + synthetics N<=12 M<=30 K in {2,3} (t_ep=12, kappa=ceil(1.25N/K))",
+    "path": "phase4_gap.parquet",
+    "replay_verified": true,
+    "time_limit_s": 600.0
   }
 }

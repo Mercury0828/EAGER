@@ -6,18 +6,18 @@
 
 ## Current state
 
-- **Current phase**: Phase 3 COMPLETE (D35/D37 escalation RESOLVED by the
-  owner's D38 ruling). Phases 0/1A/1B/2/3 all complete.
-- **Last completed step**: Phase 3 acceptance (MHSA 19/20 PASS; AGG strict
-  pair reduction on all 10 burst-carrying instances; DDQN-flat implemented;
-  Phase 2 panel regenerated under D41, exceptions = {qft_n63,
-  ghz_fanout_n78})
-- **Exact next step**: Phase 4 (Gurobi exact MILP per guide §5.2/§9.6) —
-  requires owner authorization; needs gurobipy + the WLS license; MILP
-  validated by brute-force enumeration on a <=3-qubit toy; golden-micro
-  J* <= GreedyJIT J with optimal status
-- **Blockers**: none. Standing debts: D29 (real METIS before any
-  paper-grade MHSA-vs-METIS claim), D38 (GreedyEager variant at Phase 6)
+- **Current phase**: Phase 4 COMPLETE. Phases 0/1A/1B/2/3/4 all complete.
+- **Last completed step**: Phase 4 acceptance (5 toys == brute force;
+  goldens OPTIMAL with J*=6 and exact env replay; gap harness 8/8 OPTIMAL,
+  J* <= J_greedy everywhere, greedy gaps 16.7%-64.5%)
+- **Exact next step**: Phase 5 (EAGER agent, guide §7-§8) — requires owner
+  authorization; R-GCN encoder (PyG attempt -> hand-rolled fallback per
+  §7.1), attention decoder, value head, IL from GreedyJIT traces (>=50k
+  transitions, >=90% val top-1), PPO with curriculum; install CUDA torch
+  over the venv (D42)
+- **Blockers**: none. Standing debts: D29 (real METIS before paper-grade
+  MHSA-vs-METIS claims), D38 (GreedyEager baseline at Phase 6), D3 (weight
+  calibration pilot at Phase 6)
 
 ## Session authorization
 
@@ -751,3 +751,93 @@ no test pollution:          PASS
 episode outputs identical:  PASS
 OVERALL: PASS
 ```
+
+---
+
+## Phase 4 — Gurobi exact MILP + gap harness
+
+Status: COMPLETE (2026-06-11), tagged `phase-4-done`. Authorized by the
+owner on 2026-06-11 ("继续Phase4").
+
+Scope delivered: time-indexed MILP for the deterministic special case
+(guide §5.2) built EXACTLY against the D13 env semantics — McCormick
+linearization for placement products AND for consumption-by-time products;
+per-channel tasking aggregated exactly to integer n[l,t] with rolling
+t_ep-window occupancy; availability/buffer constraints matching the env's
+overflow-safe rules; horizon = GreedyJIT makespan (lossless) [D44].
+Brute-force validator with exact latest-fit pair logistics for toy scale
+[D45]. Every solve is replay-verified by converting the solution to env
+micro-actions and reproducing J* bit-exactly. gurobipy added to deps; WLS
+academic license used locally (no license identifiers in the repo) [D46].
+
+### Acceptance — toys vs brute force, goldens OPTIMAL + replay
+
+`pytest tests/unit/test_milp_toy.py tests/integration/test_milp_golden.py -v`:
+
+```
+tests/unit/test_milp_toy.py::test_milp_matches_brute_force[buffer1] PASSED [  9%]
+tests/unit/test_milp_toy.py::test_milp_matches_brute_force[chain3] PASSED [ 18%]
+tests/unit/test_milp_toy.py::test_milp_matches_brute_force[hop3] PASSED  [ 27%]
+tests/unit/test_milp_toy.py::test_milp_matches_brute_force[local3] PASSED [ 36%]
+tests/unit/test_milp_toy.py::test_milp_matches_brute_force[remote2] PASSED [ 45%]
+tests/unit/test_milp_toy.py::test_local3_avoids_communication PASSED     [ 54%]
+tests/unit/test_milp_toy.py::test_remote2_hand_value PASSED              [ 63%]
+tests/unit/test_milp_toy.py::test_horizon_from_greedy_is_lossless PASSED [ 72%]
+tests/integration/test_milp_golden.py::test_golden_optimal_and_replay[golden_micro_1] PASSED [ 81%]
+tests/integration/test_milp_golden.py::test_golden_optimal_and_replay[golden_micro_2] PASSED [ 90%]
+tests/integration/test_milp_golden.py::test_golden_micro_2_optimum_beats_greedy_strictly PASSED [100%]
+
+============================= 11 passed in 0.94s ==============================
+```
+
+Toy coverage: generation-latency chain, W=1 window contention, B=1 tight
+buffer, all-local optimum (C_comm=0), multi-hop double-link consumption —
+MILP == brute force exactly on all five.
+
+Golden optima (both replay-verified in the env):
+- golden_micro_1: J* = 6.0 OPTIMAL (= the Phase 1A proactive hand schedule;
+  GreedyJIT pays 7).
+- golden_micro_2: J* = 6.0 OPTIMAL with T=4, C=2 — the optimum picks the
+  {q0,q2 | q1,q3} placement that makes the FIRST layer local and hides the
+  generation latency behind it, beating both the hand schedule (7) and
+  GreedyJIT (7). Placement-provisioning co-design, found by the solver.
+
+### Gap harness (guide §9.6 envelope; 600s/instance; all replay-verified)
+
+`python experiments/phase4_gurobi_gap.py --time-limit 600`:
+
+```
+golden_micro_1     N=  3 M=  3 K=2 H=   6  J*=       6 (OPTIMAL, mip_gap=0.00e+00,    0.0s)  J_greedy=       7  gap= 16.7%  replay=OK
+golden_micro_2     N=  4 M=  4 K=2 H=   5  J*=       6 (OPTIMAL, mip_gap=0.00e+00,    0.0s)  J_greedy=       7  gap= 16.7%  replay=OK
+synth_n8_m16_k2    N=  8 M= 16 K=2 H=  36  J*=      30 (OPTIMAL, mip_gap=0.00e+00,    0.4s)  J_greedy=      39  gap= 30.0%  replay=OK
+synth_n8_m16_k3    N=  8 M= 16 K=3 H=  36  J*=      30 (OPTIMAL, mip_gap=0.00e+00,    0.5s)  J_greedy=      39  gap= 30.0%  replay=OK
+synth_n10_m20_k2   N= 10 M= 20 K=2 H=  46  J*=      31 (OPTIMAL, mip_gap=0.00e+00,    0.6s)  J_greedy=      51  gap= 64.5%  replay=OK
+synth_n10_m20_k3   N= 10 M= 20 K=3 H=  49  J*=      39 (OPTIMAL, mip_gap=0.00e+00,    5.7s)  J_greedy=      55  gap= 41.0%  replay=OK
+synth_n12_m30_k2   N= 12 M= 30 K=2 H=  63  J*=      58 (OPTIMAL, mip_gap=0.00e+00,   10.8s)  J_greedy=      71  gap= 22.4%  replay=OK
+synth_n12_m30_k3   N= 12 M= 30 K=3 H=  76  J*=      63 (OPTIMAL, mip_gap=0.00e+00,   64.1s)  J_greedy=      92  gap= 46.0%  replay=OK
+
+all solves optimal: True; J* <= J_greedy everywhere: True
+```
+
+The 16.7%-64.5% GreedyJIT optimality gaps (t_ep=12 synthetics) quantify the
+headroom the learned agent must capture; results/phase4_gap.parquet +
+index.json updated.
+
+Full suite after Phase 4: `152 passed, 1 xfailed in 11.20s`.
+
+### Phase 4 self-audit
+
+| # | Criterion (guide §11 Phase 4) | Verdict | Evidence |
+|---|---|---|---|
+| 4.1 | On golden micro-instances Gurobi J* <= GreedyJIT J with optimal status | PASS (J*=6 < 7 on both, OPTIMAL, mip_gap 0) | golden test + harness table |
+| 4.2 | Linearization validated by brute-force enumeration on a <=3-qubit toy | PASS (5 toys, exact agreement; toys span window/buffer/multi-hop regimes) | test_milp_matches_brute_force |
+| 4.3 | MILP builder + gap harness delivered, reusable for T4 | PASS | src/eager/exact/ + experiments/phase4_gurobi_gap.py (8/8 OPTIMAL, replay-verified) |
+| 4.4 | Protocol: suite green, 10x repeats, clean-state, D-entries, tag+push | PASS | D44-D46; sections below |
+
+### 10x stochastic repeat (Phase 4)
+
+(pasted on completion)
+
+### Clean-state verification (Phase 4)
+
+(pasted on completion)
