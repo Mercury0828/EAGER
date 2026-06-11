@@ -30,3 +30,17 @@ def test_two_process_invocations_identical_deterministic(repo_root, circuit):
         repo_root, "configs/hardware/golden_k2_det.yaml", circuit, seed=123)
     assert "trajectory_sha256=" in out1
     assert out1 == out2
+
+
+@pytest.mark.stochastic
+def test_two_process_invocations_identical_stochastic(repo_root):
+    """Phase 1B: the CRN engine makes stochastic episodes just as
+    process-reproducible as deterministic ones."""
+    args = (repo_root, "configs/hardware/k2_line.yaml",
+            "configs/circuits/golden_micro_1.yaml")
+    out1 = run_episode_subprocess(*args, seed=77)
+    out2 = run_episode_subprocess(*args, seed=77)
+    assert "trajectory_sha256=" in out1
+    assert out1 == out2
+    out3 = run_episode_subprocess(*args, seed=78)
+    assert out3 != out1, "different run seed must change the trajectory"

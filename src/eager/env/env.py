@@ -31,6 +31,7 @@ import numpy as np
 from ..circuit import CircuitInstance
 from ..config import HardwareConfig
 from .actions import ADVANCE, Action, ActionSpace, Advance, GenEPR, Map, Schedule
+from .crn import CRNEngine
 from .metrics import episode_metrics
 from .routing import build_routing
 from .state import DONE, RUNNING, UNSCHEDULED, ChannelState, GateRuntime, LinkState
@@ -339,14 +340,13 @@ class EagerEnv:
         return reward
 
     def _draw_generation(self, link: int, channel: int, t: int, p: float) -> bool:
-        raise NotImplementedError(
-            "stochastic generation arrives with the Phase 1B CRN engine; "
-            "use a deterministic-mode hardware config")
+        success = self._crn.success(link, channel, t, p)
+        if self.params.record_draws:
+            self.draw_log[(link, channel, t)] = success
+        return success
 
-    def _make_crn(self, seed: int):
-        raise NotImplementedError(
-            "stochastic mode arrives in Phase 1B; "
-            "use a deterministic-mode hardware config")
+    def _make_crn(self, seed: int) -> CRNEngine:
+        return CRNEngine(seed)
 
     # ------------------------------------------------------------- auto-JIT
 
