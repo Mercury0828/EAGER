@@ -58,20 +58,26 @@ def main(argv: list[str] | None = None) -> int:
     val_seeds = list(range(args.val_env_seeds))
     held_cases = held_out_cases(args.eval_cases)          # seed 777
     held_seeds = list(range(args.eval_env_seeds))
+    # second validation set (seed 779) for re-ranking finalists — defeats the
+    # argmin-over-many-noisy-evals selection bias that grows with run length
+    # (D69); still disjoint from the seed-777 held-out acceptance set
+    val2_cases = held_out_cases(args.eval_cases, seed=779)
     evals = []
-    best = {"ratio": float("inf"), "iter": -1, "state": None}
+    TOPK = 6
+    candidates: list[dict] = []         # {ratio, iter, p, state}
 
     def on_eval(it: int):
         ev = paired_eval(policy, val_cases, val_seeds, device)
         ev["iter"] = it
         evals.append({k: v for k, v in ev.items() if not k.startswith("j_")})
-        # selection candidacy requires a sane win STRUCTURE too (val p<0.4),
-        # not just a lucky mean ratio (D66)
-        if (ev["ratio"] < best["ratio"] and ev["agent_truncations"] == 0
-                and ev["wilcoxon_p_less"] < 0.4):
-            best.update(ratio=ev["ratio"], iter=it,
-                        state={k: v.detach().cpu().clone()
-                               for k, v in policy.state_dict().items()})
+        if ev["agent_truncations"] == 0 and ev["wilcoxon_p_less"] < 0.4:
+            candidates.append({
+                "ratio": ev["ratio"], "iter": it,
+                "p": ev["wilcoxon_p_less"],
+                "state": {k: v.detach().cpu().clone()
+                          for k, v in policy.state_dict().items()}})
+            candidates.sort(key=lambda c: c["ratio"])
+            del candidates[TOPK:]
         strong = (ev["ratio"] < 0.97 and ev["wilcoxon_p_less"] < 0.02)
         print(f"  val@{it}: ratio {ev['ratio']:.4f} won "
               f"{ev['pairs_won']}/{ev['n_pairs']} "
@@ -95,10 +101,21 @@ def main(argv: list[str] | None = None) -> int:
                        on_eval=on_eval, eval_every=args.eval_every,
                        anchor_policy=anchor_policy)
 
-    if best["state"] is not None:
+    # re-rank the top-K val-1 finalists on the independent val-2 set; the
+    # winner there is the deployed checkpoint (D69)
+    best = None
+    if candidates:
+        for c in candidates:
+            policy.load_state_dict(c["state"])
+            ev2 = paired_eval(policy, val2_cases, val_seeds, device)
+            c["val2_ratio"] = ev2["ratio"]
+            c["val2_p"] = ev2["wilcoxon_p_less"]
+            print(f"  finalist iter {c['iter']}: val1 {c['ratio']:.4f} "
+                  f"-> val2 {ev2['ratio']:.4f} (p={ev2['wilcoxon_p_less']:.2e})")
+        best = min(candidates, key=lambda c: c["val2_ratio"])
         policy.load_state_dict(best["state"])
-        print(f"selected best-validation checkpoint from iter {best['iter']} "
-              f"(val ratio {best['ratio']:.4f})")
+        print(f"selected iter {best['iter']} by val2 "
+              f"(val1 {best['ratio']:.4f} / val2 {best['val2_ratio']:.4f})")
 
     final = paired_eval(policy, held_cases, held_seeds, device)
     final["iter"] = "final_held_out"
@@ -123,7 +140,9 @@ def main(argv: list[str] | None = None) -> int:
             "episodes": result["episodes"],
             "truncations": result["truncations"],
             "wall_s": result["wall_s"], "iters": len(result["history"])},
-            "best_val": {"iter": best["iter"], "ratio": best["ratio"]},
+            "best_val": ({"iter": best["iter"], "val1_ratio": best["ratio"],
+                          "val2_ratio": best.get("val2_ratio")}
+                         if best else None),
             "evals": evals,
             "accepted": accepted}, fh, indent=2)
     print(f"checkpoint -> {out}")
