@@ -279,7 +279,8 @@ def collect_paired_episodes(policy: EagerPolicy, cfg: PPOConfig, device,
             active = nxt
     policy.train()
 
-    flat = {"snaps": [], "asets": [], "pos": [], "logp": [], "adv": []}
+    flat = {"snaps": [], "asets": [], "pos": [], "logp": [], "adv": [],
+            "comfortable": []}
     ep_js, n_trunc = [], 0
     for i in range(n):
         key = (cases[i].label, seeds[i])
@@ -294,6 +295,8 @@ def collect_paired_episodes(policy: EagerPolicy, cfg: PPOConfig, device,
         diff = greedy_cache[key] - js[i]["J"]        # >0: agent better
         diff_std.update(diff)
         adv = diff / diff_std.std()
+        lc = cases[i].hardware.links[0]
+        comfortable = lc.p < 0.2 and lc.W >= 2       # D65 regime tag
         ep_js.append(js[i]["J"])
         n_trunc += int(js[i]["truncated"])
         for (snap, aset, p, lp) in steps[i]:
@@ -302,10 +305,12 @@ def collect_paired_episodes(policy: EagerPolicy, cfg: PPOConfig, device,
             flat["pos"].append(p)
             flat["logp"].append(lp)
             flat["adv"].append(adv)
+            flat["comfortable"].append(comfortable)
     flat["pos"] = torch.tensor(flat["pos"])
     flat["logp"] = torch.tensor(flat["logp"])
     flat["adv"] = torch.tensor(flat["adv"], dtype=torch.float32)
     flat["ret"] = flat["adv"].clone()                # value target: paired adv
+    flat["comfortable"] = np.array(flat["comfortable"], dtype=bool)
     return flat, {"episodes": n, "mean_J": float(np.mean(ep_js)),
                   "truncs": n_trunc}
 
@@ -472,14 +477,18 @@ def train_ppo(policy: EagerPolicy, cfg: PPOConfig, device, seed: int,
         stats = ppo_update(policy, opt, flat, cfg, device, ent_coef, gen_cpu)
         sched.step()
 
-        # IL-anchor: pull toward the frozen IL policy's argmax on a sample
-        # of this rollout's states (regime-conditional stability, D62).
-        # OFF during regime stage 1 (D64): the anchor is regime-blind and
-        # would punish exactly the deviations stage 1 exists to teach.
-        if anchor_policy is not None and cfg.anchor_coef > 0 and not in_stage1:
-            a_idx = sil_rng.integers(len(flat["snaps"]),
-                                     size=min(cfg.sil_minibatch,
-                                              len(flat["snaps"])))
+        # IL-anchor toward the frozen IL policy, REGIME-CONDITIONAL (D65):
+        # applied ONLY to comfortable-regime states (p<0.2 and W>=2), where
+        # the measured agent deviations are pure loss (ratio 1.08, 0 wins
+        # signal) — the provisioning-bound regime, where the agent wins with
+        # p=1e-10 significance, is left free. OFF during regime stage 1.
+        comf_pool = (np.flatnonzero(flat["comfortable"])
+                     if cfg.paired_advantage and "comfortable" in flat
+                     else np.arange(len(flat["snaps"])))
+        if (anchor_policy is not None and cfg.anchor_coef > 0
+                and not in_stage1 and len(comf_pool) > 0):
+            a_idx = comf_pool[sil_rng.integers(
+                len(comf_pool), size=min(cfg.sil_minibatch, len(comf_pool)))]
             chunk_s = [flat["snaps"][int(k)] for k in a_idx]
             chunk_a = [flat["asets"][int(k)] for k in a_idx]
             batch_a = BatchedGraphs(chunk_s, device)
