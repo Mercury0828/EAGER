@@ -64,7 +64,10 @@ def main(argv: list[str] | None = None) -> int:
         ev = paired_eval(policy, val_cases, val_seeds, device)
         ev["iter"] = it
         evals.append({k: v for k, v in ev.items() if not k.startswith("j_")})
-        if ev["ratio"] < best["ratio"] and ev["agent_truncations"] == 0:
+        # selection candidacy requires a sane win STRUCTURE too (val p<0.4),
+        # not just a lucky mean ratio (D66)
+        if (ev["ratio"] < best["ratio"] and ev["agent_truncations"] == 0
+                and ev["wilcoxon_p_less"] < 0.4):
             best.update(ratio=ev["ratio"], iter=it,
                         state={k: v.detach().cpu().clone()
                                for k, v in policy.state_dict().items()})
