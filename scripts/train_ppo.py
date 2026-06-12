@@ -33,8 +33,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--total-iters", type=int, default=150)
     parser.add_argument("--eval-every", type=int, default=10)
     parser.add_argument("--eval-cases", type=int, default=20)
-    parser.add_argument("--eval-env-seeds", type=int, default=5)
-    parser.add_argument("--val-env-seeds", type=int, default=2)
+    parser.add_argument("--eval-env-seeds", type=int, default=20)
+    parser.add_argument("--val-env-seeds", type=int, default=4)
+    parser.add_argument("--sil-gen-weight", type=float, default=1.0)
+    parser.add_argument("--anchor-coef", type=float, default=0.0)
+    parser.add_argument("--paired-advantage", action="store_true")
+    parser.add_argument("--regime-stage1-iters", type=int, default=0)
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available()
                         else "cpu")
     args = parser.parse_args(argv)
@@ -71,9 +75,20 @@ def main(argv: list[str] | None = None) -> int:
               f"{'  <- strong, stopping' if strong else ''}", flush=True)
         return {"stop": strong}
 
-    cfg = PPOConfig(total_iters=args.total_iters)
+    cfg = PPOConfig(total_iters=args.total_iters,
+                    sil_gen_weight=args.sil_gen_weight,
+                    anchor_coef=args.anchor_coef,
+                    paired_advantage=args.paired_advantage,
+                    regime_stage1_iters=args.regime_stage1_iters)
+    anchor_policy = None
+    if args.anchor_coef > 0:
+        anchor_policy = EagerPolicy()
+        anchor_policy.load_state_dict(ckpt["state_dict"])
+        anchor_policy.to(device)
+        anchor_policy.eval()
     result = train_ppo(policy, cfg, device, seed=args.seed,
-                       on_eval=on_eval, eval_every=args.eval_every)
+                       on_eval=on_eval, eval_every=args.eval_every,
+                       anchor_policy=anchor_policy)
 
     if best["state"] is not None:
         policy.load_state_dict(best["state"])

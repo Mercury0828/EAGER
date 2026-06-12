@@ -48,16 +48,25 @@ def make_hardware(qpus: int, n_qubits: int, p: float, w_ch: int,
                           "w": 1.0}})
 
 
-def sample_case(rng: np.random.Generator, stage: str = "A") -> Case:
+def sample_case(rng: np.random.Generator, stage: str = "A",
+                regime: str = "full") -> Case:
+    """regime='provisioning' restricts hardware draws to the provisioning-
+    bound part of the grid (p=0.2 or W=1 — the combos where proactive
+    provisioning has measured headroom, 4/6 of the (p, W) grid; D64), used
+    by the regime-staged curriculum. 'full' is the D49 distribution."""
     lo, hi = STAGE_N[stage]
     n = int(rng.integers(lo, hi + 1))
     ratio = int(rng.choice(RATIO_CHOICES))
     gen_seed = int(rng.integers(0, 10_000))
     inst = generate_instance(SynthParams(n, n * ratio, None), seed=gen_seed)
+    while True:
+        p = float(rng.choice(P_CHOICES))
+        w_ch = int(rng.choice(W_CHOICES))
+        if regime == "full" or p == 0.2 or w_ch == 1:
+            break
     hw = make_hardware(
         qpus=int(rng.choice((2, 4))), n_qubits=n,
-        p=float(rng.choice(P_CHOICES)), w_ch=int(rng.choice(W_CHOICES)),
-        t_cut=int(rng.choice(TCUT_CHOICES)))
+        p=p, w_ch=w_ch, t_cut=int(rng.choice(TCUT_CHOICES)))
     return Case(hardware=hw, instance=inst,
                 label=f"{inst.name}@{hw.name}")
 

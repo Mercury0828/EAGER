@@ -43,19 +43,49 @@ class PPOConfig:
     rollout_steps: int = 512
     gamma: float = 0.995
     gae_lambda: float = 0.95
-    clip: float = 0.1
+    clip: float = 0.15
     value_coef: float = 0.5
-    ent_start: float = 0.003
-    ent_end: float = 0.0005
-    lr: float = 5e-5
-    lr_min: float = 2e-5          # cosine floor: keep learning to the end
+    ent_start: float = 0.01       # exploration must SURVIVE (D60): the
+    ent_end: float = 0.003        # frozen v2/v3 regime had policy entropy
+    lr: float = 1e-4              # ~0.05 and KL ~0.002 — no discovery
+    lr_min: float = 3e-5
     update_epochs: int = 4
     minibatch: int = 1024
     grad_clip: float = 0.5
     target_kl: float = 0.02
-    total_iters: int = 150
+    total_iters: int = 300
     value_warmup_iters: int = 3
     stage: str = "A"
+    # ---- targeted-exploration self-imitation stream (D60) ----
+    sil_episodes_per_iter: int = 16
+    sil_epsilon: float = 0.15     # P(force a GenEPR when ADVANCE is argmax)
+    sil_buffer_cap: int = 60_000
+    sil_minibatch: int = 512
+    sil_steps_per_iter: int = 4
+    sil_coef: float = 1.0
+    sil_gen_weight: float = 1.0   # extra BC weight on GenEPR steps of
+                                  # winning episodes (the decisive, rare
+                                  # class; ~5-10% of a winner's states)
+    sil_win_margin: float = 0.05  # clone only episodes beating greedy by
+                                  # this RELATIVE margin: at p=0.08 the
+                                  # per-episode luck noise admits abundant
+                                  # spurious sub-margin "wins" whose cloning
+                                  # teaches gambling (D62)
+    anchor_coef: float = 0.0      # CE toward the FROZEN IL policy's argmax
+                                  # on rollout states: counters gambling
+                                  # drift in regimes where SIL has no win
+                                  # evidence (D62); 0 disables
+    paired_advantage: bool = False  # v6 (D63): episode-constant advantage
+    episodes_per_iter: int = 32     # = (J_greedy - J_agent) on the SAME
+                                    # (case, env seed) via CRN pairing --
+                                    # generation luck cancels exactly in the
+                                    # difference; rollouts become whole
+                                    # episodes instead of fixed-step windows
+    regime_stage1_iters: int = 0    # v7 (D64): iters trained on the
+                                    # provisioning-bound regime ONLY with the
+                                    # anchor OFF (skill specialization),
+                                    # before broadening to the full
+                                    # distribution with the anchor ON
 
 
 class RunningReturnStd:
@@ -116,6 +146,168 @@ class VecEnvs:
                 self.episode_counter[i] += 1
                 self.envs[i] = self._fresh_env(i)
         return rewards, dones
+
+
+def collect_sil_winners(policy: EagerPolicy, cfg: PPOConfig, device,
+                        rng: np.random.Generator, greedy_cache: dict,
+                        stage: str, regime: str = "full") -> tuple[list, dict]:
+    """Targeted-exploration self-imitation stream (D60): run episodes with
+    the policy's GREEDY action EXCEPT that, with probability sil_epsilon at
+    states where ADVANCE is the argmax and a GenEPR is valid, a demanded
+    (else any valid) GenEPR is forced instead — exactly the proactive-
+    provisioning margin that IL drove to ~zero probability and that global
+    entropy bonuses cannot reach. Episodes that BEAT the CRN-paired
+    GreedyJIT J on the same (case, env seed) return their full
+    (state, action) sequences for behavioral cloning."""
+    from ..baselines.greedy_jit import GreedyJITPolicy
+    from ..env.actions import Advance, GenEPR
+    from ..model.encoder import BatchedGraphs
+
+    n = cfg.sil_episodes_per_iter
+    cases = [sample_case(rng, stage=stage, regime=regime) for _ in range(n)]
+    seeds = [int(rng.integers(0, 1_000_000)) for _ in range(n)]
+    envs = [EagerEnv(c.hardware, c.instance) for c in cases]
+    for env, s in zip(envs, seeds):
+        env.reset(s)
+    episodes: list[list] = [[] for _ in range(n)]
+    js = [None] * n
+    active = list(range(n))
+    policy.eval()
+    with torch.no_grad():
+        while active:
+            snaps = [build_graph(envs[i]) for i in active]
+            asets = [build_action_set(envs[i], s)
+                     for i, s in zip(active, snaps)]
+            out = policy(BatchedGraphs(snaps, device), asets)
+            pos = out.greedy()
+            nxt = []
+            for j, i in enumerate(active):
+                aset = asets[j]
+                p = int(pos[j])
+                action = aset.actions[p]
+                if (isinstance(action, Advance)
+                        and rng.random() < cfg.sil_epsilon):
+                    demand, _ = envs[i].deficit_demand()
+                    gens = [(k, a) for k, a in enumerate(aset.actions)
+                            if isinstance(a, GenEPR)]
+                    if gens:
+                        demanded = [(k, a) for k, a in gens
+                                    if demand[a.link] > 0]
+                        pool = demanded if demanded else gens
+                        p, action = pool[int(rng.integers(len(pool)))]
+                episodes[i].append((snaps[j], aset, p))
+                _, _, done, info = envs[i].step(action)
+                if done:
+                    js[i] = info["metrics"]
+                else:
+                    nxt.append(i)
+            active = nxt
+    policy.train()
+
+    winners = []
+    n_won = 0
+    for i in range(n):
+        key = (cases[i].label, seeds[i])
+        if key not in greedy_cache:
+            env = EagerEnv(cases[i].hardware, cases[i].instance)
+            env.reset(seeds[i])
+            gp = GreedyJITPolicy(placement_seed=0)
+            done = False
+            while not done:
+                _, _, done, ginfo = env.step(gp(env))
+            greedy_cache[key] = ginfo["metrics"]["J"]
+        bar = greedy_cache[key] * (1.0 - cfg.sil_win_margin)
+        if (not js[i]["truncated"]) and js[i]["J"] <= bar:
+            winners.extend(episodes[i])
+            n_won += 1
+    return winners, {"episodes": n, "won": n_won, "new_states": len(winners)}
+
+
+class RunningStd:
+    def __init__(self):
+        self.count, self.mean, self.m2 = 1e-4, 0.0, 1.0
+
+    def update(self, x: float) -> None:
+        self.count += 1
+        d = x - self.mean
+        self.mean += d / self.count
+        self.m2 += d * (x - self.mean)
+
+    def std(self) -> float:
+        return math.sqrt(self.m2 / max(1.0, self.count - 1) + 1e-8)
+
+
+def collect_paired_episodes(policy: EagerPolicy, cfg: PPOConfig, device,
+                            gen: torch.Generator, rng: np.random.Generator,
+                            greedy_cache: dict, diff_std: RunningStd,
+                            stage: str, regime: str = "full"):
+    """v6 (D63): sample whole episodes (policy sampling) on fresh cases and
+    assign every step the EPISODE-CONSTANT advantage
+    (J_greedy - J_agent) / running_std, where J_greedy is the CRN-paired
+    GreedyJIT objective on the SAME (case, env seed) — an unbiased control
+    variate through which generation luck cancels exactly (§6.5)."""
+    from ..baselines.greedy_jit import GreedyJITPolicy
+    from ..model.encoder import BatchedGraphs
+
+    n = cfg.episodes_per_iter
+    cases = [sample_case(rng, stage=stage, regime=regime) for _ in range(n)]
+    seeds = [int(rng.integers(0, 1_000_000)) for _ in range(n)]
+    envs = [EagerEnv(c.hardware, c.instance) for c in cases]
+    for env, s in zip(envs, seeds):
+        env.reset(s)
+    steps: list[list] = [[] for _ in range(n)]      # (snap, aset, pos, logp)
+    js = [None] * n
+    active = list(range(n))
+    policy.eval()
+    with torch.no_grad():
+        while active:
+            snaps = [build_graph(envs[i]) for i in active]
+            asets = [build_action_set(envs[i], s)
+                     for i, s in zip(active, snaps)]
+            out = policy(BatchedGraphs(snaps, device), asets)
+            pos = out.sample(generator=gen)
+            logp = out.log_prob_of(pos).cpu()
+            nxt = []
+            for j, i in enumerate(active):
+                p = int(pos[j])
+                steps[i].append((snaps[j], asets[j], p, float(logp[j])))
+                _, _, done, info = envs[i].step(asets[j].actions[p])
+                if done:
+                    js[i] = info["metrics"]
+                else:
+                    nxt.append(i)
+            active = nxt
+    policy.train()
+
+    flat = {"snaps": [], "asets": [], "pos": [], "logp": [], "adv": []}
+    ep_js, n_trunc = [], 0
+    for i in range(n):
+        key = (cases[i].label, seeds[i])
+        if key not in greedy_cache:
+            env = EagerEnv(cases[i].hardware, cases[i].instance)
+            env.reset(seeds[i])
+            gp = GreedyJITPolicy(placement_seed=0)
+            done = False
+            while not done:
+                _, _, done, ginfo = env.step(gp(env))
+            greedy_cache[key] = ginfo["metrics"]["J"]
+        diff = greedy_cache[key] - js[i]["J"]        # >0: agent better
+        diff_std.update(diff)
+        adv = diff / diff_std.std()
+        ep_js.append(js[i]["J"])
+        n_trunc += int(js[i]["truncated"])
+        for (snap, aset, p, lp) in steps[i]:
+            flat["snaps"].append(snap)
+            flat["asets"].append(aset)
+            flat["pos"].append(p)
+            flat["logp"].append(lp)
+            flat["adv"].append(adv)
+    flat["pos"] = torch.tensor(flat["pos"])
+    flat["logp"] = torch.tensor(flat["logp"])
+    flat["adv"] = torch.tensor(flat["adv"], dtype=torch.float32)
+    flat["ret"] = flat["adv"].clone()                # value target: paired adv
+    return flat, {"episodes": n, "mean_J": float(np.mean(ep_js)),
+                  "truncs": n_trunc}
 
 
 def collect_rollout(policy: EagerPolicy, vec: VecEnvs, cfg: PPOConfig,
@@ -226,7 +418,8 @@ def ppo_update(policy: EagerPolicy, opt, flat: dict, cfg: PPOConfig, device,
 
 
 def train_ppo(policy: EagerPolicy, cfg: PPOConfig, device, seed: int,
-              log=print, on_eval=None, eval_every: int = 10) -> dict:
+              log=print, on_eval=None, eval_every: int = 10,
+              anchor_policy: EagerPolicy | None = None) -> dict:
     """on_eval(iter) -> optional dict; if it returns {"stop": True} the
     driver stops early (used for beat-greedy acceptance checks)."""
     torch.manual_seed(seed)
@@ -258,20 +451,95 @@ def train_ppo(policy: EagerPolicy, cfg: PPOConfig, device, seed: int,
         for p in frozen:
             p.requires_grad_(True)
 
+    sil_buffer: list = []
+    sil_rng = np.random.default_rng(seed * 13 + 5)
+    greedy_cache: dict = {}
+    diff_std = RunningStd()
     for it in range(cfg.total_iters):
         frac = it / max(1, cfg.total_iters - 1)
         ent_coef = cfg.ent_start + frac * (cfg.ent_end - cfg.ent_start)
-        flat = collect_rollout(policy, vec, cfg, device, gen, ret_norm)
+        in_stage1 = it < cfg.regime_stage1_iters
+        regime = "provisioning" if in_stage1 else "full"
+        if cfg.paired_advantage:
+            flat, ep_stats = collect_paired_episodes(
+                policy, cfg, device, gen, sil_rng, greedy_cache, diff_std,
+                cfg.stage, regime=regime)
+            vec.episode_js.extend([ep_stats["mean_J"]])
+            vec.episodes_done += ep_stats["episodes"]
+            vec.episode_truncs += ep_stats["truncs"]
+        else:
+            flat = collect_rollout(policy, vec, cfg, device, gen, ret_norm)
         stats = ppo_update(policy, opt, flat, cfg, device, ent_coef, gen_cpu)
         sched.step()
+
+        # IL-anchor: pull toward the frozen IL policy's argmax on a sample
+        # of this rollout's states (regime-conditional stability, D62).
+        # OFF during regime stage 1 (D64): the anchor is regime-blind and
+        # would punish exactly the deviations stage 1 exists to teach.
+        if anchor_policy is not None and cfg.anchor_coef > 0 and not in_stage1:
+            a_idx = sil_rng.integers(len(flat["snaps"]),
+                                     size=min(cfg.sil_minibatch,
+                                              len(flat["snaps"])))
+            chunk_s = [flat["snaps"][int(k)] for k in a_idx]
+            chunk_a = [flat["asets"][int(k)] for k in a_idx]
+            batch_a = BatchedGraphs(chunk_s, device)
+            with torch.no_grad():
+                ref = anchor_policy(batch_a, chunk_a)
+                ref_pos = ref.greedy()
+            out_a = policy(batch_a, chunk_a)
+            anchor_loss = cfg.anchor_coef * (
+                -out_a.log_prob_of(ref_pos).mean())
+            opt.zero_grad()
+            anchor_loss.backward()
+            torch.nn.utils.clip_grad_norm_(policy.parameters(), cfg.grad_clip)
+            opt.step()
+
+        # self-imitation stream (D60)
+        sil_stats = {"episodes": 0, "won": 0, "new_states": 0}
+        sil_loss = float("nan")
+        if cfg.sil_episodes_per_iter > 0:
+            winners, sil_stats = collect_sil_winners(
+                policy, cfg, device, sil_rng, greedy_cache, cfg.stage,
+                regime=regime)
+            sil_buffer.extend(winners)
+            if len(sil_buffer) > cfg.sil_buffer_cap:
+                del sil_buffer[: len(sil_buffer) - cfg.sil_buffer_cap]
+            if len(sil_buffer) >= cfg.sil_minibatch:
+                from ..env.actions import GenEPR as _GenEPR
+                for _ in range(cfg.sil_steps_per_iter):
+                    idx = sil_rng.integers(len(sil_buffer),
+                                           size=cfg.sil_minibatch)
+                    chunk = [sil_buffer[int(k)] for k in idx]
+                    batch = BatchedGraphs([c[0] for c in chunk], device)
+                    out = policy(batch, [c[1] for c in chunk])
+                    targets = torch.tensor([c[2] for c in chunk],
+                                           device=device)
+                    nll = -out.log_prob_of(targets)
+                    if cfg.sil_gen_weight != 1.0:
+                        w = torch.tensor(
+                            [cfg.sil_gen_weight if isinstance(
+                                c[1].actions[c[2]], _GenEPR) else 1.0
+                             for c in chunk], device=device)
+                        nll = w * nll / w.mean()
+                    loss = cfg.sil_coef * nll.mean()
+                    opt.zero_grad()
+                    loss.backward()
+                    torch.nn.utils.clip_grad_norm_(policy.parameters(),
+                                                   cfg.grad_clip)
+                    opt.step()
+                sil_loss = float(loss.item())
+
         recent = vec.episode_js[-32:]
         row = {"iter": it, "mean_recent_J": float(np.mean(recent)) if recent
                else None, "episodes": vec.episodes_done,
-               "truncs": vec.episode_truncs, **stats}
+               "truncs": vec.episode_truncs, "sil_won": sil_stats["won"],
+               "sil_buffer": len(sil_buffer), **stats}
         history.append(row)
         log(f"  it {it:3d}: J~{row['mean_recent_J'] and round(row['mean_recent_J'], 1)} "
             f"eps={vec.episodes_done} kl={stats['approx_kl']:.4f} "
-            f"ent={stats['entropy']:.3f} ({time.perf_counter() - t0:.0f}s)")
+            f"ent={stats['entropy']:.3f} sil={sil_stats['won']}/"
+            f"{sil_stats['episodes']} buf={len(sil_buffer)} "
+            f"({time.perf_counter() - t0:.0f}s)")
         if on_eval is not None and (it + 1) % eval_every == 0:
             verdict = on_eval(it)
             if verdict and verdict.get("stop"):
