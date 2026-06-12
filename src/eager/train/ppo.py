@@ -164,14 +164,14 @@ def collect_rollout(policy: EagerPolicy, vec: VecEnvs, cfg: PPOConfig,
 
 
 def ppo_update(policy: EagerPolicy, opt, flat: dict, cfg: PPOConfig, device,
-               ent_coef: float, gen: torch.Generator) -> dict:
+               ent_coef: float, gen_cpu: torch.Generator) -> dict:
     n_total = len(flat["snaps"])
     adv = flat["adv"]
     adv = (adv - adv.mean()) / (adv.std() + 1e-8)
     stats = {"pi_loss": [], "v_loss": [], "entropy": [], "approx_kl": [],
              "clipfrac": [], "early_stop": False}
     for _ in range(cfg.update_epochs):
-        perm = torch.randperm(n_total, generator=gen)
+        perm = torch.randperm(n_total, generator=gen_cpu)
         for i in range(0, n_total, cfg.minibatch):
             idx = perm[i:i + cfg.minibatch]
             snaps = [flat["snaps"][j] for j in idx.tolist()]
@@ -214,8 +214,10 @@ def train_ppo(policy: EagerPolicy, cfg: PPOConfig, device, seed: int,
     """on_eval(iter) -> optional dict; if it returns {"stop": True} the
     driver stops early (used for beat-greedy acceptance checks)."""
     torch.manual_seed(seed)
-    gen = torch.Generator(device=device)
+    gen = torch.Generator(device=device)       # device gen: action sampling
     gen.manual_seed(seed)
+    gen_cpu = torch.Generator()                # cpu gen: minibatch permutation
+    gen_cpu.manual_seed(seed + 1)
     vec = VecEnvs(cfg.n_envs, case_seed=seed * 7 + 3,
                   env_seed_base=seed * 100_000, stage=cfg.stage)
     ret_norm = RunningReturnStd(cfg.gamma, cfg.n_envs)
@@ -228,7 +230,7 @@ def train_ppo(policy: EagerPolicy, cfg: PPOConfig, device, seed: int,
         frac = it / max(1, cfg.total_iters - 1)
         ent_coef = cfg.ent_start + frac * (cfg.ent_end - cfg.ent_start)
         flat = collect_rollout(policy, vec, cfg, device, gen, ret_norm)
-        stats = ppo_update(policy, opt, flat, cfg, device, ent_coef, gen)
+        stats = ppo_update(policy, opt, flat, cfg, device, ent_coef, gen_cpu)
         sched.step()
         recent = vec.episode_js[-32:]
         row = {"iter": it, "mean_recent_J": float(np.mean(recent)) if recent

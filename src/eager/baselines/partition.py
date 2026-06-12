@@ -31,15 +31,39 @@ def cut_weight(assign: list[int], weights: dict[tuple[int, int], int]) -> int:
     return sum(w for (a, b), w in weights.items() if assign[a] != assign[b])
 
 
+def placement_order(num_items: int,
+                    weights: dict[tuple[int, int], int]) -> list[int]:
+    """The greedy-growth visit order (highest total interaction weight first,
+    tie: lowest id) — shared by the partitioner AND by the experts' Map
+    emission order (D56): mapping along this order makes every Map decision a
+    LOCAL affinity readout (place q with its already-placed neighbors), which
+    message passing can actually see, instead of a stepwise readout of a
+    global partition solution."""
+    totals = [0] * num_items
+    for (a, b), w in weights.items():
+        totals[a] += w
+        totals[b] += w
+    return sorted(range(num_items), key=lambda q: (-totals[q], q))
+
+
 def balanced_partition(num_items: int, caps: list[int],
                        weights: dict[tuple[int, int], int],
-                       seed: int = 0, max_passes: int = 10) -> list[int]:
+                       seed: int = 0, max_passes: int = 10,
+                       preassigned: dict[int, int] | None = None) -> list[int]:
     """Assign items 0..num_items-1 to parts with |part u| <= caps[u],
-    minimizing the weighted cut. Deterministic given seed."""
+    minimizing the weighted cut. Deterministic given seed.
+
+    ``preassigned`` pins items to parts (completion mode, D55): pinned items
+    seed the loads and never move during refinement — used by the
+    conditional expert that must complete an arbitrary partial mapping."""
     k = len(caps)
     if num_items > sum(caps):
         raise ValueError(f"cannot place {num_items} items into capacities "
                          f"{caps} (total {sum(caps)})")
+    preassigned = preassigned or {}
+    for q, u in preassigned.items():
+        if not 0 <= u < k:
+            raise ValueError(f"preassigned item {q} -> invalid part {u}")
     rng = np.random.default_rng(seed)
 
     adj: list[dict[int, int]] = [dict() for _ in range(num_items)]
@@ -47,11 +71,16 @@ def balanced_partition(num_items: int, caps: list[int],
         adj[a][b] = adj[a].get(b, 0) + w
         adj[b][a] = adj[b].get(a, 0) + w
 
-    total_w = [sum(adj[q].values()) for q in range(num_items)]
-    order = sorted(range(num_items), key=lambda q: (-total_w[q], q))
+    order = [q for q in placement_order(num_items, weights)
+             if q not in preassigned]
 
     assign = [-1] * num_items
     load = [0] * k
+    for q, u in preassigned.items():
+        assign[q] = u
+        load[u] += 1
+    if any(load[u] > caps[u] for u in range(k)):
+        raise ValueError(f"preassignment violates capacities {caps}")
 
     def part_affinity(q: int, u: int) -> int:
         return sum(w for nbr, w in adj[q].items() if assign[nbr] == u)
@@ -71,9 +100,11 @@ def balanced_partition(num_items: int, caps: list[int],
 
     # Refinement: FM-style single moves (need residual capacity) plus
     # Kernighan-Lin pairwise swaps (work at tight capacity), seeded order.
+    free = [q for q in range(num_items) if q not in preassigned]
+
     def single_move_pass() -> bool:
         improved = False
-        visit = list(range(num_items))
+        visit = list(free)
         rng.shuffle(visit)
         for q in visit:
             cur = assign[q]
@@ -96,8 +127,8 @@ def balanced_partition(num_items: int, caps: list[int],
         # KL gain for swapping a<->b across parts:
         #   D_a + D_b - 2*w(a,b),  D_x = aff(other part) - aff(own part)
         improved = False
-        for a in range(num_items):
-            for b in range(a + 1, num_items):
+        for ia, a in enumerate(free):
+            for b in free[ia + 1:]:
                 pa, pb = assign[a], assign[b]
                 if pa == pb:
                     continue

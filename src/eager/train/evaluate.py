@@ -39,14 +39,57 @@ def run_greedy_episode(env: EagerEnv, env_seed: int) -> dict:
     return info["metrics"]
 
 
+def run_agent_episodes_batched(policy: EagerPolicy, pairs, device,
+                               max_micro: int = 2_000_000) -> list[dict]:
+    """Greedy-decode many episodes concurrently (stragglers shrink the
+    batch); pairs = [(env, env_seed), ...]."""
+    import torch as _torch
+    from ..model.encoder import BatchedGraphs
+    from ..model.graph import build_graph
+    from ..model.policy import build_action_set
+
+    for env, seed in pairs:
+        env.reset(seed)
+    n = len(pairs)
+    metrics: list[dict | None] = [None] * n
+    active = list(range(n))
+    steps = 0
+    policy.eval()
+    with _torch.no_grad():
+        while active:
+            snaps = [build_graph(pairs[i][0]) for i in active]
+            asets = [build_action_set(pairs[i][0], s)
+                     for i, s in zip(active, snaps)]
+            out = policy(BatchedGraphs(snaps, device), asets)
+            pos = out.greedy()
+            nxt = []
+            for j, i in enumerate(active):
+                action = asets[j].actions[int(pos[j])]
+                _, _, done, info = pairs[i][0].step(action)
+                if done:
+                    metrics[i] = info["metrics"]
+                else:
+                    nxt.append(i)
+            active = nxt
+            steps += 1
+            if steps > max_micro:
+                raise RuntimeError("batched eval micro-step guard tripped")
+    return metrics
+
+
 def paired_eval(policy: EagerPolicy, cases: list[Case], env_seeds: list[int],
                 device, log=None) -> dict:
-    """Returns per-pair J arrays + summary + paired Wilcoxon (agent < greedy)."""
+    """Returns per-pair J arrays + summary + paired Wilcoxon (agent < greedy).
+    Agent episodes run batched (greedy decode); GreedyJIT runs serially."""
+    pairs = [(EagerEnv(case.hardware, case.instance), e)
+             for case in cases for e in env_seeds]
+    agent_metrics = run_agent_episodes_batched(policy, pairs, device)
     j_agent, j_greedy, trunc_agent = [], [], 0
+    idx = 0
     for case in cases:
         for e in env_seeds:
-            env = EagerEnv(case.hardware, case.instance)
-            ma = run_agent_episode(policy, env, e, device)
+            ma = agent_metrics[idx]
+            idx += 1
             env = EagerEnv(case.hardware, case.instance)
             mg = run_greedy_episode(env, e)
             j_agent.append(ma["J"])

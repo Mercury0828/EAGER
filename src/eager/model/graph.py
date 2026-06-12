@@ -7,9 +7,9 @@ Node types (features normalized to [0,1] / one-hot; dims fixed per type):
       #unfinished immediate preds / 2; gate depth / instance depth
   qubit (4 dims): mapped flag; interaction-graph degree / max degree;
       remaining unscheduled 2q-gate count on this qubit / max remaining;
-      is-next-to-map flag (1 on the lowest-id unmapped qubit — the
-      serialization convention GreedyJIT and the D15 enumeration share;
-      a state feature, so the architecture stays permutation-invariant; D52)
+      is-next-to-map flag (1 on the first unmapped qubit in the experts'
+      Map-emission order = the partitioner's greedy order, D52/D56; a state
+      feature, so the architecture stays permutation-invariant)
   qpu (7 dims): kappa_res/kappa; mapped_count/kappa;
       #ready local gates hosted / max(1, #ready gates);
       QPU id one-hot padded to 4 (the sequential-fill tie-break convention
@@ -136,7 +136,11 @@ def build_graph(env: EagerEnv) -> GraphSnapshot:
     max_deg = max(1, int(degree.max()) if n_q else 1)
     max_rem = max(1, int(remaining.max()) if n_q else 1)
     x_qubit = np.zeros((n_q, QUBIT_DIM), dtype=np.float32)
-    next_to_map = min(env._unmapped) if env._unmapped else -1
+    next_to_map = -1
+    if env._unmapped:
+        from ..baselines.greedy_jit import map_emission_order
+        next_to_map = next(q for q in map_emission_order(inst)
+                           if q in env._unmapped)
     for q in range(n_q):
         x_qubit[q, 0] = 0.0 if env.qubit_qpu[q] is None else 1.0
         x_qubit[q, 1] = degree[q] / max_deg

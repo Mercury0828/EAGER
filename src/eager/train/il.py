@@ -30,6 +30,55 @@ class Transition:
     snap: GraphSnapshot
     aset: ActionSet
     expert_pos: int
+    positives: np.ndarray | None = None   # cut-equivalent-optimal positions
+                                          # (Map states, D57); None -> {expert_pos}
+
+
+def _hop_matrix(hardware):
+    from ..env.routing import build_routing
+    rt = build_routing(hardware)
+    k = hardware.num_qpus
+    hop = [[0] * k for _ in range(k)]
+    for u in range(k):
+        for v in range(k):
+            if u != v:
+                hop[u][v] = len(rt.route(u, v))
+    return hop
+
+
+def _completion_comm_cost(instance, hardware, weights, hop,
+                          pinned: dict[int, int], seed: int = 0) -> float:
+    from ..baselines.partition import balanced_partition
+    plan = balanced_partition(instance.num_qubits, list(hardware.kappa),
+                              weights, seed=seed, preassigned=pinned)
+    cost = 0.0
+    for (a, b), w in weights.items():
+        cost += w * hop[plan[a]][plan[b]]
+    return cost
+
+
+def map_positive_positions(env: EagerEnv, aset: ActionSet, expert_action,
+                           weights, hop) -> np.ndarray:
+    """All valid Map(q, u) positions (same qubit as the expert's choice)
+    whose optimal-completion COMM COST (route hops weighted by gate counts)
+    ties the minimum — the J-equivalent placement choices (D57). The expert's
+    own position is always included."""
+    from ..env.actions import Map as MapAction
+    q = expert_action.qubit
+    pinned_base = {i: u for i, u in enumerate(env.qubit_qpu) if u is not None}
+    costs: dict[int, float] = {}
+    for pos, a in enumerate(aset.actions):
+        if isinstance(a, MapAction) and a.qubit == q:
+            costs[pos] = _completion_comm_cost(
+                env.instance, env.hardware, weights, hop,
+                {**pinned_base, q: a.qpu})
+    best = min(costs.values())
+    pos = np.array(sorted(p for p, c in costs.items()
+                          if c <= best + 1e-9), dtype=np.int64)
+    expert_pos = aset.actions.index(expert_action)
+    if expert_pos not in pos:
+        pos = np.append(pos, expert_pos)
+    return pos
 
 
 def collect_expert_dataset(min_transitions: int = 50_000, seed: int = 0,
@@ -37,6 +86,8 @@ def collect_expert_dataset(min_transitions: int = 50_000, seed: int = 0,
                            log_every: int = 50) -> tuple[list[list[Transition]], dict]:
     """Run GreedyJIT episodes over the stage distribution until the
     transition budget is met; returns episodes (list of transition lists)."""
+    from ..baselines.partition import interaction_graph
+    from ..env.actions import Map as MapAction
     rng = np.random.default_rng(seed)
     episodes: list[list[Transition]] = []
     n_tr = 0
@@ -48,6 +99,8 @@ def collect_expert_dataset(min_transitions: int = 50_000, seed: int = 0,
         env = EagerEnv(case.hardware, case.instance)
         policy = GreedyJITPolicy(placement_seed=0)
         env.reset(episodes_seed0 + ep)
+        weights = interaction_graph(case.instance)
+        hop = _hop_matrix(case.hardware)
         done = False
         episode: list[Transition] = []
         while not done:
@@ -55,7 +108,12 @@ def collect_expert_dataset(min_transitions: int = 50_000, seed: int = 0,
             aset = build_action_set(env, snap)
             action = policy(env)
             pos = aset.actions.index(action)
-            episode.append(Transition(snap=snap, aset=aset, expert_pos=pos))
+            positives = None
+            if isinstance(action, MapAction):
+                positives = map_positive_positions(env, aset, action,
+                                                   weights, hop)
+            episode.append(Transition(snap=snap, aset=aset, expert_pos=pos,
+                                      positives=positives))
             _, _, done, info = env.step(action)
         assert not info["metrics"]["truncated"], case.label
         episodes.append(episode)
@@ -70,6 +128,66 @@ def collect_expert_dataset(min_transitions: int = 50_000, seed: int = 0,
               "n_qubits_mean": float(np.mean(sizes)),
               "collect_seconds": round(time.perf_counter() - t0, 1)}
     return episodes, stats
+
+
+def collect_dagger_states(policy, n_transitions: int, device,
+                          case_seed: int = 100, env_seed_base: int = 500_000,
+                          n_envs: int = 16, stage: str = "A",
+                          log_every: int = 20_000) -> list[Transition]:
+    """DAgger round (D55): roll the CURRENT agent (greedy decode — the
+    deployment policy) over the training distribution and label every
+    visited state with the CONDITIONAL expert's action (a completion
+    partition pinned to the agent's partial mapping; recovery supervision)."""
+    import torch as _torch
+    from ..baselines.greedy_jit import ConditionalGreedyJIT
+    from ..model.encoder import BatchedGraphs
+
+    rng = np.random.default_rng(case_seed)
+    envs: list = [None] * n_envs
+    experts: list = [None] * n_envs
+    counters = [0] * n_envs
+
+    def fresh(i: int) -> None:
+        case = sample_case(rng, stage=stage)
+        env = EagerEnv(case.hardware, case.instance)
+        env.reset(env_seed_base + 1000 * counters[i] + i)
+        envs[i] = env
+        experts[i] = ConditionalGreedyJIT(placement_seed=0)
+
+    for i in range(n_envs):
+        fresh(i)
+    from ..baselines.partition import interaction_graph
+    from ..env.actions import Map as MapAction
+    out: list[Transition] = []
+    policy.eval()
+    t0 = time.perf_counter()
+    with _torch.no_grad():
+        while len(out) < n_transitions:
+            snaps = [build_graph(e) for e in envs]
+            asets = [build_action_set(e, s) for e, s in zip(envs, snaps)]
+            pol_out = policy(BatchedGraphs(snaps, device), asets)
+            positions = pol_out.greedy()
+            for i, env in enumerate(envs):
+                expert_action = experts[i](env)
+                pos = asets[i].actions.index(expert_action)
+                positives = None
+                if isinstance(expert_action, MapAction):
+                    positives = map_positive_positions(
+                        env, asets[i], expert_action,
+                        interaction_graph(env.instance),
+                        _hop_matrix(env.hardware))
+                out.append(Transition(snap=snaps[i], aset=asets[i],
+                                      expert_pos=pos, positives=positives))
+                agent_action = asets[i].actions[int(positions[i])]
+                _, _, done, _ = env.step(agent_action)
+                if done:
+                    counters[i] += 1
+                    fresh(i)
+            if log_every and len(out) % log_every < n_envs:
+                print(f"  dagger: {len(out)} labeled states "
+                      f"({time.perf_counter() - t0:.0f}s)", flush=True)
+    policy.train()
+    return out[:n_transitions]
 
 
 def split_episodes(episodes: list[list[Transition]], val_frac: float = 0.1,
@@ -89,6 +207,22 @@ def _batch_forward(policy: EagerPolicy, batch_tr: list[Transition], device):
     out = policy(batch, [t.aset for t in batch_tr])
     targets = torch.tensor([t.expert_pos for t in batch_tr], device=device)
     return out, targets
+
+
+def _multi_positive_nll(out, chunk: list[Transition], device) -> torch.Tensor:
+    """-log sum_{p in positives} prob(p): every J-equivalent placement choice
+    counts as correct (D57); non-map transitions have the singleton set."""
+    from ..model.policy import segment_logsumexp
+    logp = out.log_softmax()
+    flat_idx, seg_ids = [], []
+    for i, t in enumerate(chunk):
+        pos = (t.positives if t.positives is not None
+               else np.array([t.expert_pos]))
+        flat_idx.extend((out.ptr[i] + pos).tolist())
+        seg_ids.extend([i] * len(pos))
+    vals = logp[torch.tensor(flat_idx, device=device)]
+    seg = torch.tensor(seg_ids, device=device)
+    return -segment_logsumexp(vals, seg, len(chunk))
 
 
 def expert_action_code(t: Transition) -> int:
@@ -129,10 +263,13 @@ def evaluate_top1(policy: EagerPolicy, data: list[Transition], device,
 
 def evaluate_breakdown(policy: EagerPolicy, data: list[Transition], device,
                        batch_size: int = 512) -> dict[str, dict]:
-    """Per-expert-action-type top-1 accuracy."""
+    """Per-expert-action-type STRICT top-1, plus class-correct accuracy for
+    maps (prediction inside the J-equivalent positives set, D57)."""
     names = {0: "map", 1: "schedule", 2: "gen_epr", 3: "advance"}
     hit: dict[int, int] = {c: 0 for c in names}
     tot: dict[int, int] = {c: 0 for c in names}
+    class_hit = 0
+    class_tot = 0
     policy.eval()
     with torch.no_grad():
         for i in range(0, len(data), batch_size):
@@ -143,10 +280,16 @@ def evaluate_breakdown(policy: EagerPolicy, data: list[Transition], device,
                 c = expert_action_code(t)
                 tot[c] += 1
                 hit[c] += int(pred[j].item() == targets[j].item())
+                if c == 0 and t.positives is not None:
+                    class_tot += 1
+                    class_hit += int(pred[j].item() in t.positives)
     policy.train()
-    return {names[c]: {"n": tot[c],
-                       "top1": (hit[c] / tot[c]) if tot[c] else None}
-            for c in names}
+    result = {names[c]: {"n": tot[c],
+                         "top1": (hit[c] / tot[c]) if tot[c] else None}
+              for c in names}
+    result["map_class_correct"] = {
+        "n": class_tot, "acc": (class_hit / class_tot) if class_tot else None}
+    return result
 
 
 def train_il(policy: EagerPolicy, train_data: list[Transition],
@@ -169,7 +312,10 @@ def train_il(policy: EagerPolicy, train_data: list[Transition],
         for i in range(0, len(order), batch_size):
             chunk = [train_data[j] for j in order[i:i + batch_size]]
             out, targets = _batch_forward(policy, chunk, device)
-            nll = -out.log_prob_of(targets)
+            # equivalence-aware main term + small strict-CE auxiliary that
+            # keeps the convention tie-break (and the strict top-1 gate)
+            nll = (_multi_positive_nll(out, chunk, device)
+                   + 0.25 * (-out.log_prob_of(targets)))
             if weights is not None:
                 w = torch.tensor([weights[expert_action_code(t)]
                                   for t in chunk], device=device)
