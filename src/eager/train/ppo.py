@@ -31,20 +31,30 @@ from .distribution import sample_case
 
 @dataclass
 class PPOConfig:
+    """Fine-tuning regime (D58): the §8.2 defaults (lr 3e-4, clip 0.2)
+    re-learn from scratch and destroy the IL initialization before slowly
+    recovering (measured: held-out ratio 1.04 -> 1.2-1.9 in the first 30
+    iters, back to ~1.00 by iter 120, never significant); §15's sanctioned
+    fallbacks apply: smaller clip, gentler lr, low entropy, plus a VALUE
+    WARMUP phase (policy frozen) so the freshly initialized value head
+    cannot feed noise advantages to the policy gradient."""
+
     n_envs: int = 16
     rollout_steps: int = 512
     gamma: float = 0.995
     gae_lambda: float = 0.95
-    clip: float = 0.2
+    clip: float = 0.1
     value_coef: float = 0.5
-    ent_start: float = 0.01
-    ent_end: float = 0.001
-    lr: float = 3e-4
+    ent_start: float = 0.003
+    ent_end: float = 0.0005
+    lr: float = 5e-5
+    lr_min: float = 2e-5          # cosine floor: keep learning to the end
     update_epochs: int = 4
     minibatch: int = 1024
     grad_clip: float = 0.5
     target_kl: float = 0.02
     total_iters: int = 150
+    value_warmup_iters: int = 3
     stage: str = "A"
 
 
@@ -164,7 +174,8 @@ def collect_rollout(policy: EagerPolicy, vec: VecEnvs, cfg: PPOConfig,
 
 
 def ppo_update(policy: EagerPolicy, opt, flat: dict, cfg: PPOConfig, device,
-               ent_coef: float, gen_cpu: torch.Generator) -> dict:
+               ent_coef: float, gen_cpu: torch.Generator,
+               value_only: bool = False) -> dict:
     n_total = len(flat["snaps"])
     adv = flat["adv"]
     adv = (adv - adv.mean()) / (adv.std() + 1e-8)
@@ -188,7 +199,12 @@ def ppo_update(policy: EagerPolicy, opt, flat: dict, cfg: PPOConfig, device,
             pi_loss = torch.max(l1, l2).mean()
             v_loss = ((out.value - flat["ret"][idx].to(device)) ** 2).mean()
             ent = out.entropy().mean()
-            loss = pi_loss + cfg.value_coef * v_loss - ent_coef * ent
+            if value_only:
+                # warmup: fit the value head only; the policy gradient stays
+                # OFF until advantages mean something (D58)
+                loss = cfg.value_coef * v_loss
+            else:
+                loss = pi_loss + cfg.value_coef * v_loss - ent_coef * ent
             opt.zero_grad()
             loss.backward()
             torch.nn.utils.clip_grad_norm_(policy.parameters(), cfg.grad_clip)
@@ -201,7 +217,7 @@ def ppo_update(policy: EagerPolicy, opt, flat: dict, cfg: PPOConfig, device,
             stats["entropy"].append(ent.item())
             stats["approx_kl"].append(approx_kl)
             stats["clipfrac"].append(clipfrac)
-            if approx_kl > cfg.target_kl:
+            if not value_only and approx_kl > cfg.target_kl:
                 stats["early_stop"] = True
                 return {k: (np.mean(v) if isinstance(v, list) and v else v)
                         for k, v in stats.items()}
@@ -223,9 +239,25 @@ def train_ppo(policy: EagerPolicy, cfg: PPOConfig, device, seed: int,
     ret_norm = RunningReturnStd(cfg.gamma, cfg.n_envs)
     opt = torch.optim.Adam(policy.parameters(), lr=cfg.lr)
     sched = torch.optim.lr_scheduler.CosineAnnealingLR(
-        opt, T_max=cfg.total_iters)
+        opt, T_max=cfg.total_iters, eta_min=cfg.lr_min)
     history = []
     t0 = time.perf_counter()
+
+    # ---- value warmup: fit V on frozen features, policy untouched (D58) ----
+    if cfg.value_warmup_iters > 0:
+        frozen = [p for n, p in policy.named_parameters()
+                  if not n.startswith("v_mlp")]
+        for p in frozen:
+            p.requires_grad_(False)
+        warm_opt = torch.optim.Adam(policy.v_mlp.parameters(), lr=1e-3)
+        for wit in range(cfg.value_warmup_iters):
+            flat = collect_rollout(policy, vec, cfg, device, gen, ret_norm)
+            stats = ppo_update(policy, warm_opt, flat, cfg, device, 0.0,
+                               gen_cpu, value_only=True)
+            log(f"  warmup {wit}: v_loss={stats['v_loss']:.4f}")
+        for p in frozen:
+            p.requires_grad_(True)
+
     for it in range(cfg.total_iters):
         frac = it / max(1, cfg.total_iters - 1)
         ent_coef = cfg.ent_start + frac * (cfg.ent_end - cfg.ent_start)

@@ -33,7 +33,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--total-iters", type=int, default=150)
     parser.add_argument("--eval-every", type=int, default=10)
     parser.add_argument("--eval-cases", type=int, default=20)
-    parser.add_argument("--eval-env-seeds", type=int, default=3)
+    parser.add_argument("--eval-env-seeds", type=int, default=5)
+    parser.add_argument("--val-env-seeds", type=int, default=2)
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available()
                         else "cpu")
     args = parser.parse_args(argv)
@@ -45,35 +46,48 @@ def main(argv: list[str] | None = None) -> int:
     policy.load_state_dict(ckpt["state_dict"])
     policy.to(device)
 
-    cases = held_out_cases(args.eval_cases)
-    env_seeds = list(range(args.eval_env_seeds))
+    # model selection on a SEPARATE validation case set (seed 778); the
+    # held-out acceptance set (seed 777) is touched only once at the end
+    # (no selection-on-test contamination, D59)
+    val_cases = held_out_cases(args.eval_cases, seed=778)
+    val_seeds = list(range(args.val_env_seeds))
+    held_cases = held_out_cases(args.eval_cases)          # seed 777
+    held_seeds = list(range(args.eval_env_seeds))
     evals = []
+    best = {"ratio": float("inf"), "iter": -1, "state": None}
 
     def on_eval(it: int):
-        ev = paired_eval(policy, cases, env_seeds, device)
+        ev = paired_eval(policy, val_cases, val_seeds, device)
         ev["iter"] = it
-        evals.append(ev)
-        ok = (ev["mean_J_agent"] < ev["mean_J_greedy"]
-              and ev["wilcoxon_p_less"] < 0.05
-              and ev["agent_truncations"] == 0)
-        print(f"  eval@{it}: agent J={ev['mean_J_agent']:.2f} vs greedy "
-              f"{ev['mean_J_greedy']:.2f} (ratio {ev['ratio']:.4f}) "
-              f"won {ev['pairs_won']}/{ev['n_pairs']} "
+        evals.append({k: v for k, v in ev.items() if not k.startswith("j_")})
+        if ev["ratio"] < best["ratio"] and ev["agent_truncations"] == 0:
+            best.update(ratio=ev["ratio"], iter=it,
+                        state={k: v.detach().cpu().clone()
+                               for k, v in policy.state_dict().items()})
+        strong = (ev["ratio"] < 0.97 and ev["wilcoxon_p_less"] < 0.02)
+        print(f"  val@{it}: ratio {ev['ratio']:.4f} won "
+              f"{ev['pairs_won']}/{ev['n_pairs']} "
               f"p={ev['wilcoxon_p_less']:.2e} trunc={ev['agent_truncations']}"
-              f"  {'<- ACCEPTANCE MET' if ok else ''}", flush=True)
-        return {"stop": ok}
+              f"{'  <- strong, stopping' if strong else ''}", flush=True)
+        return {"stop": strong}
 
     cfg = PPOConfig(total_iters=args.total_iters)
     result = train_ppo(policy, cfg, device, seed=args.seed,
                        on_eval=on_eval, eval_every=args.eval_every)
 
-    final = paired_eval(policy, cases, env_seeds, device)
-    final["iter"] = "final"
-    evals.append(final)
+    if best["state"] is not None:
+        policy.load_state_dict(best["state"])
+        print(f"selected best-validation checkpoint from iter {best['iter']} "
+              f"(val ratio {best['ratio']:.4f})")
+
+    final = paired_eval(policy, held_cases, held_seeds, device)
+    final["iter"] = "final_held_out"
+    evals.append({k: v for k, v in final.items() if not k.startswith("j_")})
     accepted = (final["mean_J_agent"] < final["mean_J_greedy"]
                 and final["wilcoxon_p_less"] < 0.05
                 and final["agent_truncations"] == 0)
-    print(f"FINAL seed {args.seed}: agent J={final['mean_J_agent']:.2f} vs "
+    print(f"FINAL seed {args.seed} (held-out, {final['n_pairs']} pairs): "
+          f"agent J={final['mean_J_agent']:.2f} vs "
           f"greedy {final['mean_J_greedy']:.2f} ratio={final['ratio']:.4f} "
           f"won {final['pairs_won']}/{final['n_pairs']} "
           f"p={final['wilcoxon_p_less']:.2e} trunc={final['agent_truncations']} "
@@ -89,8 +103,8 @@ def main(argv: list[str] | None = None) -> int:
             "episodes": result["episodes"],
             "truncations": result["truncations"],
             "wall_s": result["wall_s"], "iters": len(result["history"])},
-            "evals": [{k: v for k, v in e.items() if not k.startswith("j_")}
-                      for e in evals],
+            "best_val": {"iter": best["iter"], "ratio": best["ratio"]},
+            "evals": evals,
             "accepted": accepted}, fh, indent=2)
     print(f"checkpoint -> {out}")
     return 0 if accepted else 1
