@@ -39,6 +39,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--anchor-coef", type=float, default=0.0)
     parser.add_argument("--paired-advantage", action="store_true")
     parser.add_argument("--regime-stage1-iters", type=int, default=0)
+    parser.add_argument("--comfortable-rl-off", action="store_true")
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available()
                         else "cpu")
     args = parser.parse_args(argv)
@@ -82,7 +83,8 @@ def main(argv: list[str] | None = None) -> int:
                     sil_gen_weight=args.sil_gen_weight,
                     anchor_coef=args.anchor_coef,
                     paired_advantage=args.paired_advantage,
-                    regime_stage1_iters=args.regime_stage1_iters)
+                    regime_stage1_iters=args.regime_stage1_iters,
+                    comfortable_rl_off=args.comfortable_rl_off)
     anchor_policy = None
     if args.anchor_coef > 0:
         anchor_policy = EagerPolicy()

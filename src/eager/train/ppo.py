@@ -75,6 +75,12 @@ class PPOConfig:
                                   # on rollout states: counters gambling
                                   # drift in regimes where SIL has no win
                                   # evidence (D62); 0 disables
+    comfortable_rl_off: bool = False  # v9 (D67): zero the policy-gradient
+                                      # advantage on comfortable-regime
+                                      # episodes entirely — comfortable
+                                      # behavior is shaped ONLY by the
+                                      # anchor; RL/SIL act only where
+                                      # headroom is proven
     paired_advantage: bool = False  # v6 (D63): episode-constant advantage
     episodes_per_iter: int = 32     # = (J_greedy - J_agent) on the SAME
                                     # (case, env seed) via CRN pairing --
@@ -309,8 +315,10 @@ def collect_paired_episodes(policy: EagerPolicy, cfg: PPOConfig, device,
     flat["pos"] = torch.tensor(flat["pos"])
     flat["logp"] = torch.tensor(flat["logp"])
     flat["adv"] = torch.tensor(flat["adv"], dtype=torch.float32)
-    flat["ret"] = flat["adv"].clone()                # value target: paired adv
     flat["comfortable"] = np.array(flat["comfortable"], dtype=bool)
+    if cfg.comfortable_rl_off:
+        flat["adv"][torch.from_numpy(flat["comfortable"])] = 0.0
+    flat["ret"] = flat["adv"].clone()                # value target: paired adv
     return flat, {"episodes": n, "mean_J": float(np.mean(ep_js)),
                   "truncs": n_trunc}
 
@@ -375,7 +383,12 @@ def ppo_update(policy: EagerPolicy, opt, flat: dict, cfg: PPOConfig, device,
                value_only: bool = False) -> dict:
     n_total = len(flat["snaps"])
     adv = flat["adv"]
-    adv = (adv - adv.mean()) / (adv.std() + 1e-8)
+    if cfg.paired_advantage:
+        # paired advantages have a MEANINGFUL zero (= ties greedy under the
+        # same luck); scale-normalize only, so masked zeros stay zero (D67)
+        adv = adv / (adv.std() + 1e-8)
+    else:
+        adv = (adv - adv.mean()) / (adv.std() + 1e-8)
     stats = {"pi_loss": [], "v_loss": [], "entropy": [], "approx_kl": [],
              "clipfrac": [], "early_stop": False}
     for _ in range(cfg.update_epochs):
