@@ -81,6 +81,13 @@ class PPOConfig:
                                       # behavior is shaped ONLY by the
                                       # anchor; RL/SIL act only where
                                       # headroom is proven
+    comfortable_greedy_anchor: bool = False  # v10 (D70): anchor comfortable-
+                                      # regime states toward the (conditional)
+                                      # GREEDY action, not IL — IL itself is
+                                      # ~1.04 vs greedy, so an IL anchor caps
+                                      # comfortable at ~1.04; greedy is the
+                                      # near-optimal target where proactivity
+                                      # only wastes pairs
     paired_advantage: bool = False  # v6 (D63): episode-constant advantage
     episodes_per_iter: int = 32     # = (J_greedy - J_agent) on the SAME
                                     # (case, env seed) via CRN pairing --
@@ -252,7 +259,7 @@ def collect_paired_episodes(policy: EagerPolicy, cfg: PPOConfig, device,
     (J_greedy - J_agent) / running_std, where J_greedy is the CRN-paired
     GreedyJIT objective on the SAME (case, env seed) — an unbiased control
     variate through which generation luck cancels exactly (§6.5)."""
-    from ..baselines.greedy_jit import GreedyJITPolicy
+    from ..baselines.greedy_jit import ConditionalGreedyJIT, GreedyJITPolicy
     from ..model.encoder import BatchedGraphs
 
     n = cfg.episodes_per_iter
@@ -261,7 +268,16 @@ def collect_paired_episodes(policy: EagerPolicy, cfg: PPOConfig, device,
     envs = [EagerEnv(c.hardware, c.instance) for c in cases]
     for env, s in zip(envs, seeds):
         env.reset(s)
-    steps: list[list] = [[] for _ in range(n)]      # (snap, aset, pos, logp)
+    # per-episode comfortable tag + (optional) live greedy oracle for the
+    # comfortable-regime greedy anchor (D70)
+    comfy = []
+    for c in cases:
+        lc = c.hardware.links[0]
+        comfy.append(lc.p < 0.2 and lc.W >= 2)
+    oracle = [ConditionalGreedyJIT(0) if (cfg.comfortable_greedy_anchor
+                                          and comfy[i]) else None
+              for i in range(n)]
+    steps: list[list] = [[] for _ in range(n)]   # (snap, aset, pos, logp, gpos)
     js = [None] * n
     active = list(range(n))
     policy.eval()
@@ -276,7 +292,11 @@ def collect_paired_episodes(policy: EagerPolicy, cfg: PPOConfig, device,
             nxt = []
             for j, i in enumerate(active):
                 p = int(pos[j])
-                steps[i].append((snaps[j], asets[j], p, float(logp[j])))
+                gpos = -1
+                if oracle[i] is not None:
+                    ga = oracle[i](envs[i])         # greedy action at THIS state
+                    gpos = asets[j].actions.index(ga)
+                steps[i].append((snaps[j], asets[j], p, float(logp[j]), gpos))
                 _, _, done, info = envs[i].step(asets[j].actions[p])
                 if done:
                     js[i] = info["metrics"]
@@ -286,7 +306,7 @@ def collect_paired_episodes(policy: EagerPolicy, cfg: PPOConfig, device,
     policy.train()
 
     flat = {"snaps": [], "asets": [], "pos": [], "logp": [], "adv": [],
-            "comfortable": []}
+            "comfortable": [], "greedy_pos": []}
     ep_js, n_trunc = [], 0
     for i in range(n):
         key = (cases[i].label, seeds[i])
@@ -301,21 +321,21 @@ def collect_paired_episodes(policy: EagerPolicy, cfg: PPOConfig, device,
         diff = greedy_cache[key] - js[i]["J"]        # >0: agent better
         diff_std.update(diff)
         adv = diff / diff_std.std()
-        lc = cases[i].hardware.links[0]
-        comfortable = lc.p < 0.2 and lc.W >= 2       # D65 regime tag
         ep_js.append(js[i]["J"])
         n_trunc += int(js[i]["truncated"])
-        for (snap, aset, p, lp) in steps[i]:
+        for (snap, aset, p, lp, gpos) in steps[i]:
             flat["snaps"].append(snap)
             flat["asets"].append(aset)
             flat["pos"].append(p)
             flat["logp"].append(lp)
             flat["adv"].append(adv)
-            flat["comfortable"].append(comfortable)
+            flat["comfortable"].append(comfy[i])
+            flat["greedy_pos"].append(gpos)
     flat["pos"] = torch.tensor(flat["pos"])
     flat["logp"] = torch.tensor(flat["logp"])
     flat["adv"] = torch.tensor(flat["adv"], dtype=torch.float32)
     flat["comfortable"] = np.array(flat["comfortable"], dtype=bool)
+    flat["greedy_pos"] = np.array(flat["greedy_pos"], dtype=np.int64)
     if cfg.comfortable_rl_off:
         flat["adv"][torch.from_numpy(flat["comfortable"])] = 0.0
     flat["ret"] = flat["adv"].clone()                # value target: paired adv
@@ -498,16 +518,28 @@ def train_ppo(policy: EagerPolicy, cfg: PPOConfig, device, seed: int,
         comf_pool = (np.flatnonzero(flat["comfortable"])
                      if cfg.paired_advantage and "comfortable" in flat
                      else np.arange(len(flat["snaps"])))
-        if (anchor_policy is not None and cfg.anchor_coef > 0
-                and not in_stage1 and len(comf_pool) > 0):
+        use_greedy_anchor = (cfg.comfortable_greedy_anchor
+                             and "greedy_pos" in flat)
+        if use_greedy_anchor:
+            # restrict the pool to comfortable states that carry a recorded
+            # greedy target (D70)
+            comf_pool = np.flatnonzero(
+                flat["comfortable"] & (flat["greedy_pos"] >= 0))
+        if ((anchor_policy is not None or use_greedy_anchor)
+                and cfg.anchor_coef > 0 and not in_stage1 and len(comf_pool) > 0):
             a_idx = comf_pool[sil_rng.integers(
                 len(comf_pool), size=min(cfg.sil_minibatch, len(comf_pool)))]
             chunk_s = [flat["snaps"][int(k)] for k in a_idx]
             chunk_a = [flat["asets"][int(k)] for k in a_idx]
             batch_a = BatchedGraphs(chunk_s, device)
-            with torch.no_grad():
-                ref = anchor_policy(batch_a, chunk_a)
-                ref_pos = ref.greedy()
+            if use_greedy_anchor:
+                ref_pos = torch.tensor(
+                    [int(flat["greedy_pos"][int(k)]) for k in a_idx],
+                    device=device)
+            else:
+                with torch.no_grad():
+                    ref = anchor_policy(batch_a, chunk_a)
+                    ref_pos = ref.greedy()
             out_a = policy(batch_a, chunk_a)
             anchor_loss = cfg.anchor_coef * (
                 -out_a.log_prob_of(ref_pos).mean())
