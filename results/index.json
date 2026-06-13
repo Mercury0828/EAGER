@@ -104,5 +104,81 @@
     "qpus": 4,
     "seeds": 8,
     "weights": "alpha=1,beta=1,gamma=0.5 (D74)"
+  },
+  "phase6_zeroshot": {
+    "circuits": [
+      "adder_n28",
+      "dnn_n51",
+      "cat_n65",
+      "bv_n70",
+      "ghz_n78",
+      "ghz_fanout_n78",
+      "qugan_n71",
+      "ising_n98"
+    ],
+    "ckpt": "artifacts/agents/eager_final.pt",
+    "crn_paired": true,
+    "note": "locked path-B EAGER, no retraining; K=8 is an unseen topology",
+    "path": "phase6_zeroshot.parquet",
+    "qpus": [
+      4
+    ],
+    "regimes": [
+      "normal",
+      "prov_bound"
+    ],
+    "seeds": 6,
+    "summary": {
+      "ALL": {
+        "n": 96,
+        "p": 4.530615442565459e-11,
+        "ratio": 0.9035363906000455,
+        "won": 68
+      },
+      "seen-K (4)": {
+        "n": 96,
+        "p": 4.530615442565459e-11,
+        "ratio": 0.9035363906000455,
+        "won": 68
+      }
+    }
+  },
+  "phase6_zeroshot_k8": {
+    "circuits": [
+      "adder_n28",
+      "dnn_n51",
+      "cat_n65",
+      "bv_n70",
+      "ghz_n78",
+      "ghz_fanout_n78",
+      "qugan_n71",
+      "ising_n98"
+    ],
+    "ckpt": "artifacts/agents/eager_final.pt",
+    "crn_paired": true,
+    "note": "locked path-B EAGER, no retraining; K=8 is an unseen topology",
+    "path": "phase6_zeroshot_k8.parquet",
+    "qpus": [
+      8
+    ],
+    "regimes": [
+      "normal",
+      "prov_bound"
+    ],
+    "seeds": 4,
+    "summary": {
+      "ALL": {
+        "n": 32,
+        "p": 0.9511183397397036,
+        "ratio": 2.107231516459795,
+        "won": 14
+      },
+      "unseen-K (8)": {
+        "n": 32,
+        "p": 0.9511183397397036,
+        "ratio": 2.107231516459795,
+        "won": 14
+      }
+    }
   }
 }
