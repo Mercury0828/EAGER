@@ -14,6 +14,8 @@ dependencies = [
     "pandas>=2.1",
     "pyarrow>=14",
     "torch>=2.2",
+    "torch_geometric>=2.6",
+    "scipy>=1.11",
     "gurobipy>=11",
 ]
 
