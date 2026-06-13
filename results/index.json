@@ -1,4 +1,16 @@
 {
+  "effect_sizes": {
+    "boot": 10000,
+    "eager_vs_agg_ci": [
+      0.9287419582693827,
+      0.9835784831030524
+    ],
+    "eager_vs_agg_median": 1.0,
+    "eager_vs_agg_per_inst": 0.9564284779354709,
+    "eager_vs_agg_win_rate": 0.44135802469135804,
+    "method": "instance-cluster bootstrap 95% CI",
+    "path": "effect_sizes.md"
+  },
   "phase2_panel": {
     "crn_paired": true,
     "hardware": "K=4 2x2 grid, kappa=ceil(1.25N/4), p=1/12, W=2, B=8, T_cut=20, w=1, stochastic",

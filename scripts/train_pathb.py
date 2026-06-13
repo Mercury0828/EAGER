@@ -43,12 +43,13 @@ from eager.train.pathb import (
 ART = Path("artifacts") / "agents"
 
 
-def collect_pathb_dataset(min_transitions: int, seed: int, log_every=100):
+def collect_pathb_dataset(min_transitions: int, seed: int, log_every=100,
+                          waste_frac: float = 0.0):
     rng = np.random.default_rng(seed)
     episodes, n_tr, ep = [], 0, 0
     t0 = time.perf_counter()
     while n_tr < min_transitions:
-        case = sample_pathb_case(rng)
+        case = sample_pathb_case(rng, waste_frac=waste_frac)
         env = premapped_env(case, seed=ep)            # placement pre-applied
         expert = GreedyRegimeProvisionPolicy(placement=list(case.placement))
         episode, done = [], False
@@ -91,7 +92,8 @@ def run_pathb_heuristic(factory, case, seed):
     return info["metrics"]
 
 
-def pathb_ppo_refine(policy, device, seed, iters, eval_cb, log=print):
+def pathb_ppo_refine(policy, device, seed, iters, eval_cb, log=print,
+                     waste_frac: float = 0.0):
     """Provisioning-only PPO refinement (D78): rollouts on pre-mapped AGG
     envs; episode-constant CRN-paired advantage (J_RegimeProvision - J_agent)
     on the SAME (case, env seed) so generation luck cancels and the gradient
@@ -115,7 +117,7 @@ def pathb_ppo_refine(policy, device, seed, iters, eval_cb, log=print):
 
     def collect(value_only=False):
         n = cfg.episodes_per_iter
-        cases = [sample_pathb_case(rng) for _ in range(n)]
+        cases = [sample_pathb_case(rng, waste_frac=waste_frac) for _ in range(n)]
         seeds = [int(rng.integers(0, 1_000_000)) for _ in range(n)]
         envs = [premapped_env(c, s) for c, s in zip(cases, seeds)]
         steps = [[] for _ in range(n)]
@@ -256,6 +258,9 @@ def main(argv=None) -> int:
                          "of R-GCN — the clean graph-vs-flat isolation (D83)")
     ap.add_argument("--tag", default=None,
                     help="checkpoint/json filename tag (default seed-based)")
+    ap.add_argument("--waste-curriculum", type=float, default=0.0,
+                    help="fraction of training cases drawn from the waste "
+                         "corner (D85), to shrink the waste-vs-reactive residual")
     ap.add_argument("--device", default="cuda" if torch.cuda.is_available()
                     else "cpu")
     args = ap.parse_args(argv)
@@ -278,7 +283,8 @@ def main(argv=None) -> int:
         print(f"loaded {args.init_ckpt}; skipping IL")
     else:
         print("collecting path-B expert dataset (RegimeProvision on AGG) ...")
-        episodes, stats_ds = collect_pathb_dataset(args.transitions, args.seed)
+        episodes, stats_ds = collect_pathb_dataset(
+            args.transitions, args.seed, waste_frac=args.waste_curriculum)
         print(f"dataset: {stats_ds}")
         train_data, val_data = split_episodes(episodes, 0.1, args.seed + 1)
         print(f"split: {len(train_data)} train / {len(val_data)} val")
@@ -306,17 +312,21 @@ def main(argv=None) -> int:
                         c, e)["J"])
             return float(np.mean(ja) / np.mean(jr))
         ppo_out = pathb_ppo_refine(policy, device, args.seed, args.ppo_iters,
-                                   val_ratio)
+                                   val_ratio, waste_frac=args.waste_curriculum)
 
     print("held-out eval (EAGER-on-AGG vs AGG-reactive / AGG-eager) ...")
     ev = evaluate(policy, cases, eval_seeds, device)
+    print("waste-stratified held-out eval (D85 — residual check) ...")
+    waste_cases = held_out_pathb_cases(args.eval_cases, seed=779, waste=True)
+    ev_waste = evaluate(policy, waste_cases, eval_seeds, device)
 
     ART.mkdir(parents=True, exist_ok=True)
     ckpt = ART / f"pathb_{tag}.pt"
     torch.save({"state_dict": policy.state_dict()}, ckpt)
     with open(ART / f"pathb_{tag}.json", "w", encoding="utf-8") as fh:
         json.dump({"dataset": stats_ds, "il_val_top1": result["best_val_top1"],
-                   "eval": ev,
+                   "eval": ev, "eval_waste": ev_waste,
+                   "waste_curriculum": args.waste_curriculum,
                    "ppo_trajectory": (ppo_out or {}).get("trajectory", [])},
                   fh, indent=2)
     print(f"checkpoint -> {ckpt}")
