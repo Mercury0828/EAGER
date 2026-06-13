@@ -173,20 +173,23 @@ def pathb_ppo_refine(policy, device, seed, iters, eval_cb, log=print):
 
     sched = T.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=iters, eta_min=cfg.lr_min)
     best = {"ratio": float("inf"), "state": None}
+    traj = []                                   # (iter, kl, val_ratio) for F4
     for it in range(iters):
         frac = it / max(1, iters - 1)
         ent = cfg.ent_start + frac * (cfg.ent_end - cfg.ent_start)
         stats = ppo_update(policy, opt, collect(), cfg, device, ent, gen_cpu)
         sched.step()
-        if (it + 1) % 10 == 0:
+        if (it + 1) % 5 == 0:
             r = eval_cb()
             if r < best["ratio"]:
                 best.update(ratio=r, state={k: v.detach().cpu().clone()
                                             for k, v in policy.state_dict().items()})
+            traj.append({"iter": it + 1, "kl": float(stats["approx_kl"]),
+                         "val_ratio_vs_react": float(r)})
             log(f"  ppo it {it+1}: kl={stats['approx_kl']:.4f} val_ratio_vs_react={r:.4f}")
     if best["state"] is not None:
         policy.load_state_dict(best["state"])
-    return best["ratio"]
+    return {"ratio": best["ratio"], "trajectory": traj}
 
 
 def paired(a, b):
@@ -287,6 +290,7 @@ def main(argv=None) -> int:
     cases = held_out_pathb_cases(args.eval_cases)
     eval_seeds = list(range(args.eval_seeds))
 
+    ppo_out = None
     if args.ppo_iters > 0:
         print(f"provisioning-only PPO refinement ({args.ppo_iters} iters) ...")
         val_cases = held_out_pathb_cases(args.eval_cases, seed=778)
@@ -301,7 +305,8 @@ def main(argv=None) -> int:
                             placement_fn=lambda i, h, p=list(cc.placement): p),
                         c, e)["J"])
             return float(np.mean(ja) / np.mean(jr))
-        pathb_ppo_refine(policy, device, args.seed, args.ppo_iters, val_ratio)
+        ppo_out = pathb_ppo_refine(policy, device, args.seed, args.ppo_iters,
+                                   val_ratio)
 
     print("held-out eval (EAGER-on-AGG vs AGG-reactive / AGG-eager) ...")
     ev = evaluate(policy, cases, eval_seeds, device)
@@ -311,7 +316,9 @@ def main(argv=None) -> int:
     torch.save({"state_dict": policy.state_dict()}, ckpt)
     with open(ART / f"pathb_{tag}.json", "w", encoding="utf-8") as fh:
         json.dump({"dataset": stats_ds, "il_val_top1": result["best_val_top1"],
-                   "eval": ev}, fh, indent=2)
+                   "eval": ev,
+                   "ppo_trajectory": (ppo_out or {}).get("trajectory", [])},
+                  fh, indent=2)
     print(f"checkpoint -> {ckpt}")
     full = ev["full"]
     ok = full["vs_AGGreactive_ratio"] < 1.0 and full["vs_react_p"] < 0.05
