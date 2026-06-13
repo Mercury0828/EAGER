@@ -113,6 +113,43 @@ class RGCNEncoder(nn.Module):
         return h
 
 
+class MLPEncoder(nn.Module):
+    """Representation-isolation ablation encoder (guide §9.4 / D83): identical
+    per-type input projections to the R-GCN encoder, but the L message-passing
+    RGCNConv layers are replaced by per-node Linear + ReLU + LayerNorm that do
+    NOT use edge_index/edge_type — i.e. an MLP over the SAME per-node features
+    with NO relational message passing. Drop-in for RGCNEncoder (same forward
+    signature, comparable parameter count). Trained with EAGER's exact IL+PPO
+    pipeline, decoder, value head, and env-step budget, so any EAGER-over-flat
+    gap is attributable purely to the graph encoder's message passing — the
+    clean 'is the GNN necessary' isolation that the DDQN baseline (D81) could
+    not provide (it confounded algorithm with representation)."""
+
+    def __init__(self, hidden: int = HIDDEN, layers: int = LAYERS):
+        super().__init__()
+        self.hidden = hidden
+        self.in_gate = nn.Linear(GATE_DIM, hidden)
+        self.in_qubit = nn.Linear(QUBIT_DIM, hidden)
+        self.in_qpu = nn.Linear(QPU_DIM, hidden)
+        self.in_link = nn.Linear(LINK_DIM, hidden)
+        self.layers = nn.ModuleList(
+            [nn.Linear(hidden, hidden) for _ in range(layers)])
+        self.norms = nn.ModuleList(
+            [nn.LayerNorm(hidden) for _ in range(layers)])
+
+    def forward(self, batch: BatchedGraphs) -> torch.Tensor:
+        h = torch.zeros(batch.num_nodes, self.hidden,
+                        device=batch.node2graph.device)
+        if batch.x_gate.shape[0]:
+            h[batch.gate_pos] = self.in_gate(batch.x_gate)
+        h[batch.qubit_pos] = self.in_qubit(batch.x_qubit)
+        h[batch.qpu_pos] = self.in_qpu(batch.x_qpu)
+        h[batch.link_pos] = self.in_link(batch.x_link)
+        for lin, norm in zip(self.layers, self.norms):
+            h = norm(torch.relu(lin(h)))          # per-node only, no edges
+        return h
+
+
 def mean_readout(h: torch.Tensor, batch: BatchedGraphs) -> torch.Tensor:
     """Per-graph mean over ALL nodes [n_graphs, hidden] (permutation
     invariant, guide §7.2)."""

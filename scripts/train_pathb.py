@@ -248,13 +248,24 @@ def main(argv=None) -> int:
                     help="provisioning-only PPO refinement iters after IL (D78)")
     ap.add_argument("--init-ckpt", default=None,
                     help="skip IL, load this checkpoint and PPO-refine")
+    ap.add_argument("--flat-encoder", action="store_true",
+                    help="ablation: MLP encoder (no message passing) instead "
+                         "of R-GCN — the clean graph-vs-flat isolation (D83)")
+    ap.add_argument("--tag", default=None,
+                    help="checkpoint/json filename tag (default seed-based)")
     ap.add_argument("--device", default="cuda" if torch.cuda.is_available()
                     else "cpu")
     args = ap.parse_args(argv)
     device = torch.device(args.device)
-    print(f"device: {device}")
+    tag = args.tag or f"seed{args.seed}"
+    print(f"device: {device}; encoder: "
+          f"{'MLP-flat (ablation)' if args.flat_encoder else 'R-GCN'}; tag={tag}")
 
-    policy = EagerPolicy()
+    if args.flat_encoder:
+        from eager.model.encoder import MLPEncoder
+        policy = EagerPolicy(encoder=MLPEncoder())
+    else:
+        policy = EagerPolicy()
     if args.init_ckpt:
         policy.load_state_dict(torch.load(args.init_ckpt, map_location="cpu",
                                           weights_only=False)["state_dict"])
@@ -296,9 +307,9 @@ def main(argv=None) -> int:
     ev = evaluate(policy, cases, eval_seeds, device)
 
     ART.mkdir(parents=True, exist_ok=True)
-    ckpt = ART / f"pathb_seed{args.seed}.pt"
+    ckpt = ART / f"pathb_{tag}.pt"
     torch.save({"state_dict": policy.state_dict()}, ckpt)
-    with open(ART / f"pathb_seed{args.seed}.json", "w", encoding="utf-8") as fh:
+    with open(ART / f"pathb_{tag}.json", "w", encoding="utf-8") as fh:
         json.dump({"dataset": stats_ds, "il_val_top1": result["best_val_top1"],
                    "eval": ev}, fh, indent=2)
     print(f"checkpoint -> {ckpt}")

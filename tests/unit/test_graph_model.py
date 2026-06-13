@@ -116,6 +116,33 @@ def test_policy_distribution_and_batching(hardware_dir, circuits_dir):
         logp[len(a1.actions)].item(), abs=1e-5)
 
 
+def test_mlp_encoder_ablation_runs_and_ignores_edges(hardware_dir, circuits_dir):
+    """MLPEncoder (D83 flat representation isolation): drop-in for the R-GCN
+    encoder, produces a valid policy distribution + value, and — being
+    message-passing-free — its output does NOT depend on edge_index/edge_type."""
+    from eager.model.encoder import MLPEncoder
+
+    env = golden_env(hardware_dir, circuits_dir)
+    env.reset(0)
+    env.step(Map(0, 0)); env.step(Map(1, 0)); env.step(Map(2, 1))
+    snap = build_graph(env)
+    aset = build_action_set(env, snap)
+
+    torch.manual_seed(0)
+    policy = EagerPolicy(hidden=32, encoder=MLPEncoder(hidden=32))
+    policy.eval()
+    batch = BatchedGraphs([snap], DEVICE)
+    with torch.no_grad():
+        out = policy(batch, [aset])
+        assert out.log_softmax().exp().sum().item() == pytest.approx(1.0, abs=1e-5)
+        assert out.value.shape == (1,)
+        # zero out all edges -> message passing would change h; an MLP must not
+        batch.edge_index = batch.edge_index[:, :0]
+        batch.edge_type = batch.edge_type[:0]
+        out2 = policy(batch, [aset])
+    assert torch.allclose(out.logits, out2.logits, atol=1e-6)
+
+
 def test_action_set_matches_env_enumeration(hardware_dir, circuits_dir):
     env = golden_env(hardware_dir, circuits_dir)
     env.reset(0)

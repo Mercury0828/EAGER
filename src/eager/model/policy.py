@@ -113,10 +113,13 @@ def _segment_argmax_positions(x: torch.Tensor, seg: torch.Tensor,
 class EagerPolicy(nn.Module):
     """Encoder + pointer decoder + value head (guide §7)."""
 
-    def __init__(self, hidden: int = HIDDEN):
+    def __init__(self, hidden: int = HIDDEN, encoder: nn.Module | None = None):
         super().__init__()
         self.hidden = hidden
-        self.encoder = RGCNEncoder(hidden=hidden)
+        # default = R-GCN; pass MLPEncoder() for the flat representation-
+        # isolation ablation (D83). Everything downstream is identical.
+        self.encoder = encoder if encoder is not None else RGCNEncoder(
+            hidden=hidden)
         self.q_mlp = nn.Sequential(
             nn.Linear(hidden + GLOBALS_DIM, hidden), nn.ReLU(),
             nn.Linear(hidden, hidden))
