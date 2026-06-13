@@ -180,5 +180,85 @@
         "won": 14
       }
     }
+  },
+  "phase7_stochastic_gap": {
+    "anchor": "clairvoyant perfect-information optimum (lower bound on any non-anticipative policy; B&B per CRN seed)",
+    "crn_paired": true,
+    "instances": [
+      "q2m1",
+      "q3m2",
+      "q4m3"
+    ],
+    "path": "phase7_stochastic_gap.parquet",
+    "regime": "p=0.5 W=1 B=2 t_ep=2 T_cut=20",
+    "seeds": 16,
+    "summary": {
+      "q2m1": {
+        "EAGER(path-B,OOD)": {
+          "gap": 0.0,
+          "meanJ": 5.0625
+        },
+        "GreedyEager(always-on)": {
+          "gap": 0.0,
+          "meanJ": 5.0625
+        },
+        "GreedyJIT(reactive)": {
+          "gap": 0.0,
+          "meanJ": 5.0625
+        },
+        "RegimeProvision(adaptive)": {
+          "gap": 0.0,
+          "meanJ": 5.0625
+        },
+        "n": 16,
+        "opt": 5.0625
+      },
+      "q3m2": {
+        "EAGER(path-B,OOD)": {
+          "gap": 0.0,
+          "meanJ": 5.0625
+        },
+        "GreedyEager(always-on)": {
+          "gap": 0.0,
+          "meanJ": 5.0625
+        },
+        "GreedyJIT(reactive)": {
+          "gap": 0.25925925925925924,
+          "meanJ": 6.375
+        },
+        "RegimeProvision(adaptive)": {
+          "gap": 0.0,
+          "meanJ": 5.0625
+        },
+        "n": 16,
+        "opt": 5.0625
+      },
+      "q4m3": {
+        "EAGER(path-B,OOD)": {
+          "gap": 0.0,
+          "meanJ": 5.0625
+        },
+        "GreedyEager(always-on)": {
+          "gap": 0.0,
+          "meanJ": 5.0625
+        },
+        "GreedyJIT(reactive)": {
+          "gap": 0.25925925925925924,
+          "meanJ": 6.375
+        },
+        "RegimeProvision(adaptive)": {
+          "gap": 0.0,
+          "meanJ": 5.0625
+        },
+        "n": 16,
+        "opt": 5.0625
+      }
+    }
+  },
+  "t5_ablation": {
+    "flat_vs_reactive": 0.9590977800171908,
+    "graph_vs_reactive": 0.9494820309502495,
+    "path": "t5_ablation.md",
+    "rows": "graph EAGER / flat-MLP (D83) / NoProactive (\u00a79.7) + T4 stochastic-optimum anchor (D84)"
   }
 }
