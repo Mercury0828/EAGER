@@ -133,3 +133,59 @@ Template per baseline:
 - **Budget/fairness**: Phase 6 trains with the same env-step budget as
   EAGER's PPO phase; agent RNG (torch/numpy) seeded separately from the env
   CRN.
+
+## CloudQC (stretch / closest published setting, guide §9.8)
+
+- **Source method**: Yu et al., "CloudQC: A Network-aware Framework for
+  Multi-tenant Distributed Quantum Computing" (arXiv:2504.20389, IEEE 2025) —
+  the closest published setting (joint placement + network scheduling under
+  probabilistic EPR generation).
+- **Public artifact checked**: none found; method extracted from the paper's
+  abstract/method summary (the PDF is binary-encoded; used the structured
+  review of the method).
+- **Faithful parts**: (1) placement = balanced graph partition with tuned
+  imbalance + community detection + heuristic mapping ranked by S=alpha/T +
+  beta/C; (2) network scheduler = priority by longest-path depth in the
+  remote DAG (= our criticality), and "allocating REDUNDANT network resources
+  to important gates to mitigate backlogs" -> criticality-prioritized
+  PROACTIVE provisioning that fills buffer headroom on the links serving the
+  most critical unscheduled remote gates first.
+- **Adaptations (D79)**: our setting is single-circuit, homogeneous QPUs,
+  fixed shortest-path routing, so CloudQC's multi-tenant placement (community
+  detection over a QPU pool + the S-score over remaining capacity) reduces to
+  a balanced capacity-constrained min-cut — the same placement family as the
+  other baselines, so the comparison isolates CloudQC's distinctive
+  criticality-prioritized redundant SCHEDULER. The exact redundancy quantity
+  is unspecified in the source; we fill buffer headroom on critical links
+  (bounded by the §6.3 overflow-safe rule). Labeled "CloudQC-style".
+- **Behavior note**: with ample channels its redundant proactive provisioning
+  approaches always-on; under channel contention (W=1) the criticality
+  ordering is its distinguishing feature; like all proactive heuristics it
+  wastes in the high-p / tight-T_cut regime (the D75 regime map).
+
+## Provisioning-spectrum controls (not published; D75/D76)
+
+Principled provisioning-strategy baselines spanning the eager<->lazy spectrum,
+introduced to characterize the proactive-provisioning tradeoff (the thesis)
+and as honest controls for the learned policy:
+- **GreedyEager** (D75): GreedyJIT placement/scheduling + always-on
+  generation on every link serving an unscheduled remote gate (maximally
+  proactive — the "is learning needed over trivially always-generating"
+  control).
+- **GreedyAdaptive(K)** (D76): bounded-lookahead provisioning (provision for
+  remote gates within K unfinished predecessors); K=0 -> JIT, K->inf -> eager.
+- **GreedyRegimeProvision** (D76): eager normally, reactive in the waste
+  regime (the regime-adaptive switch; ~oracle on a fixed placement; the IL
+  target for the path-B learned policy, D77).
+
+## EAGER (the learned policy, path B, D77/D78)
+
+- **Composition**: AGG placement + AGG aggregation (the strong static base)
+  + a LEARNED proactive-provisioning policy (R-GCN encoder + attention
+  decoder, IL from GreedyRegimeProvision + provisioning-only PPO). The agent
+  does NOT learn placement (D72/D76 showed it cannot match MHSA/AGG); it
+  learns only provisioning, so any win over AGG is attributable purely to the
+  learned provisioning (placement+aggregation matched).
+- **Result**: vs AGG-reactive +5.1% (p=1.9e-22); beats always-on in BOTH
+  regimes (normal +0.9%, waste +5.5%); residual: pure-reactive is best in the
+  extreme waste regime (reported limitation, D78b).

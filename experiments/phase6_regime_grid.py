@@ -75,7 +75,8 @@ def build_panel(n_instances: int, seed: int = 4242):
     return panel
 
 
-HEURISTICS = ["greedy_jit", "greedy_eager", "mhsa_ls", "agg", "random_prog"]
+HEURISTICS = ["greedy_jit", "greedy_eager", "greedy_adaptive",
+              "greedy_regime_prov", "cloudqc", "mhsa_ls", "agg", "random_prog"]
 
 
 def precompute_per_instance(panel, qpus: int):
@@ -103,8 +104,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--seeds", type=int, default=8)
     parser.add_argument("--qpus", type=int, default=4)
     parser.add_argument("--eager-ckpt", default=None)
+    parser.add_argument("--methods", default=None,
+                        help="comma-separated subset of heuristics (default all)")
     parser.add_argument("--out", default="phase6_regime_grid.parquet")
     args = parser.parse_args(argv)
+    methods = (args.methods.split(",") if args.methods else HEURISTICS)
 
     panel = build_panel(args.instances)
     env_seeds = list(range(args.seeds))
@@ -137,7 +141,7 @@ def main(argv: list[str] | None = None) -> int:
                     h = hardware(args.qpus, inst.num_qubits, p, w_ch, t_cut)
                     pc = plc[inst.name]
                     # heuristics (placements reused from the cache)
-                    for mname in HEURISTICS:
+                    for mname in methods:
                         for e in env_seeds:
                             run_inst = inst
                             if mname == "greedy_jit":
@@ -146,6 +150,17 @@ def main(argv: list[str] | None = None) -> int:
                             elif mname == "greedy_eager":
                                 policy = GreedyEagerPolicy()
                                 policy._placement = pc["greedy"]
+                            elif mname == "greedy_adaptive":
+                                from eager.baselines.greedy_jit import GreedyAdaptivePolicy
+                                policy = GreedyAdaptivePolicy()
+                                policy._placement = pc["greedy"]
+                            elif mname == "greedy_regime_prov":
+                                from eager.baselines.greedy_jit import GreedyRegimeProvisionPolicy
+                                policy = GreedyRegimeProvisionPolicy(
+                                    placement=pc["greedy"])
+                            elif mname == "cloudqc":
+                                from eager.baselines.cloudqc import CloudQCPolicy
+                                policy = CloudQCPolicy(placement=pc["greedy"])
                             elif mname == "mhsa_ls":
                                 policy = GreedyJITPolicy(
                                     placement_fn=lambda i, hw, pl=pc["mhsa"]: pl,
