@@ -91,6 +91,104 @@ def run_pathb_heuristic(factory, case, seed):
     return info["metrics"]
 
 
+def pathb_ppo_refine(policy, device, seed, iters, eval_cb, log=print):
+    """Provisioning-only PPO refinement (D78): rollouts on pre-mapped AGG
+    envs; episode-constant CRN-paired advantage (J_RegimeProvision - J_agent)
+    on the SAME (case, env seed) so generation luck cancels and the gradient
+    rewards beating the regime-adaptive expert (esp. learning to hold back in
+    the waste regime, which the IL clone does imperfectly). Reuses the D58/D63
+    machinery. Value-warmup first; best checkpoint by validation."""
+    import torch as T
+    from eager.model.encoder import BatchedGraphs
+    from eager.train.ppo import PPOConfig, RunningStd, ppo_update
+
+    cfg = PPOConfig(paired_advantage=True, clip=0.15, lr=8e-5, lr_min=3e-5,
+                    ent_start=0.005, ent_end=0.001, value_warmup_iters=3,
+                    total_iters=iters, episodes_per_iter=32)
+    T.manual_seed(seed)
+    gen = T.Generator(device=device); gen.manual_seed(seed)
+    gen_cpu = T.Generator(); gen_cpu.manual_seed(seed + 1)
+    rng = np.random.default_rng(seed * 7 + 1)
+    opt = T.optim.Adam(policy.parameters(), lr=cfg.lr)
+    diff_std = RunningStd()
+    greedy_cache: dict = {}
+
+    def collect(value_only=False):
+        n = cfg.episodes_per_iter
+        cases = [sample_pathb_case(rng) for _ in range(n)]
+        seeds = [int(rng.integers(0, 1_000_000)) for _ in range(n)]
+        envs = [premapped_env(c, s) for c, s in zip(cases, seeds)]
+        steps = [[] for _ in range(n)]
+        js = [None] * n
+        active = list(range(n))
+        policy.eval()
+        with T.no_grad():
+            while active:
+                snaps = [build_graph(envs[i]) for i in active]
+                asets = [build_action_set(envs[i], s) for i, s in zip(active, snaps)]
+                out = policy(BatchedGraphs(snaps, device), asets)
+                pos = out.sample(generator=gen)
+                logp = out.log_prob_of(pos).cpu()
+                nxt = []
+                for j, i in enumerate(active):
+                    p = int(pos[j])
+                    steps[i].append((snaps[j], asets[j], p, float(logp[j])))
+                    _, _, done, info = envs[i].step(asets[j].actions[p])
+                    if done:
+                        js[i] = info["metrics"]
+                    else:
+                        nxt.append(i)
+                active = nxt
+        policy.train()
+        flat = {"snaps": [], "asets": [], "pos": [], "logp": [], "adv": []}
+        for i in range(n):
+            key = (cases[i].label, seeds[i])
+            if key not in greedy_cache:
+                env = premapped_env(cases[i], seeds[i])
+                exp = GreedyRegimeProvisionPolicy(placement=list(cases[i].placement))
+                done = False
+                while not done:
+                    _, _, done, gi = env.step(exp(env))
+                greedy_cache[key] = gi["metrics"]["J"]
+            diff = greedy_cache[key] - js[i]["J"]
+            diff_std.update(diff)
+            adv = diff / diff_std.std()
+            for (snap, aset, p, lp) in steps[i]:
+                flat["snaps"].append(snap); flat["asets"].append(aset)
+                flat["pos"].append(p); flat["logp"].append(lp); flat["adv"].append(adv)
+        flat["pos"] = T.tensor(flat["pos"]); flat["logp"] = T.tensor(flat["logp"])
+        flat["adv"] = T.tensor(flat["adv"], dtype=T.float32)
+        flat["ret"] = flat["adv"].clone()
+        return flat
+
+    # value warmup (policy frozen)
+    frozen = [p for n_, p in policy.named_parameters() if not n_.startswith("v_mlp")]
+    for p in frozen:
+        p.requires_grad_(False)
+    wopt = T.optim.Adam(policy.v_mlp.parameters(), lr=1e-3)
+    for _ in range(cfg.value_warmup_iters):
+        ppo_update(policy, wopt, collect(), cfg, device, 0.0, gen_cpu, value_only=True)
+    for p in frozen:
+        p.requires_grad_(True)
+
+    sched = T.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=iters, eta_min=cfg.lr_min)
+    best = {"ratio": float("inf"), "state": None}
+    for it in range(iters):
+        frac = it / max(1, iters - 1)
+        ent = cfg.ent_start + frac * (cfg.ent_end - cfg.ent_start)
+        stats = ppo_update(policy, opt, collect(), cfg, device, ent, gen_cpu)
+        sched.step()
+        if (it + 1) % 10 == 0:
+            r = eval_cb()
+            if r < best["ratio"]:
+                best.update(ratio=r, state={k: v.detach().cpu().clone()
+                                            for k, v in policy.state_dict().items()})
+            log(f"  ppo it {it+1}: kl={stats['approx_kl']:.4f} val_ratio_vs_react={r:.4f}")
+    if best["state"] is not None:
+        policy.load_state_dict(best["state"])
+    return best["ratio"]
+
+
 def paired(a, b):
     a, b = np.array(a), np.array(b)
     p = (stats.wilcoxon(a, b, alternative="less").pvalue
@@ -146,27 +244,56 @@ def main(argv=None) -> int:
     ap.add_argument("--patience", type=int, default=6)
     ap.add_argument("--eval-cases", type=int, default=20)
     ap.add_argument("--eval-seeds", type=int, default=8)
+    ap.add_argument("--ppo-iters", type=int, default=0,
+                    help="provisioning-only PPO refinement iters after IL (D78)")
+    ap.add_argument("--init-ckpt", default=None,
+                    help="skip IL, load this checkpoint and PPO-refine")
     ap.add_argument("--device", default="cuda" if torch.cuda.is_available()
                     else "cpu")
     args = ap.parse_args(argv)
     device = torch.device(args.device)
     print(f"device: {device}")
 
-    print("collecting path-B expert dataset (RegimeProvision on AGG) ...")
-    episodes, stats_ds = collect_pathb_dataset(args.transitions, args.seed)
-    print(f"dataset: {stats_ds}")
-    train_data, val_data = split_episodes(episodes, 0.1, args.seed + 1)
-    print(f"split: {len(train_data)} train / {len(val_data)} val")
-
     policy = EagerPolicy()
-    result = train_il(policy, train_data, val_data, device,
-                      max_epochs=args.max_epochs, seed=args.seed,
-                      batch_size=args.batch_size, patience=args.patience)
-    print(f"IL best val top-1: {result['best_val_top1']:.4f}")
+    if args.init_ckpt:
+        policy.load_state_dict(torch.load(args.init_ckpt, map_location="cpu",
+                                          weights_only=False)["state_dict"])
+        policy.to(device)
+        stats_ds = {"note": f"loaded {args.init_ckpt}"}
+        result = {"best_val_top1": float("nan")}
+        print(f"loaded {args.init_ckpt}; skipping IL")
+    else:
+        print("collecting path-B expert dataset (RegimeProvision on AGG) ...")
+        episodes, stats_ds = collect_pathb_dataset(args.transitions, args.seed)
+        print(f"dataset: {stats_ds}")
+        train_data, val_data = split_episodes(episodes, 0.1, args.seed + 1)
+        print(f"split: {len(train_data)} train / {len(val_data)} val")
+        result = train_il(policy, train_data, val_data, device,
+                          max_epochs=args.max_epochs, seed=args.seed,
+                          batch_size=args.batch_size, patience=args.patience)
+        print(f"IL best val top-1: {result['best_val_top1']:.4f}")
+
+    cases = held_out_pathb_cases(args.eval_cases)
+    eval_seeds = list(range(args.eval_seeds))
+
+    if args.ppo_iters > 0:
+        print(f"provisioning-only PPO refinement ({args.ppo_iters} iters) ...")
+        val_cases = held_out_pathb_cases(args.eval_cases, seed=778)
+
+        def val_ratio():
+            ja, jr = [], []
+            for c in val_cases:
+                for e in range(4):
+                    ja.append(run_pathb_agent(policy, c, e, device)["J"])
+                    jr.append(run_pathb_heuristic(
+                        lambda cc: GreedyJITPolicy(
+                            placement_fn=lambda i, h, p=list(cc.placement): p),
+                        c, e)["J"])
+            return float(np.mean(ja) / np.mean(jr))
+        pathb_ppo_refine(policy, device, args.seed, args.ppo_iters, val_ratio)
 
     print("held-out eval (EAGER-on-AGG vs AGG-reactive / AGG-eager) ...")
-    cases = held_out_pathb_cases(args.eval_cases)
-    ev = evaluate(policy, cases, list(range(args.eval_seeds)), device)
+    ev = evaluate(policy, cases, eval_seeds, device)
 
     ART.mkdir(parents=True, exist_ok=True)
     ckpt = ART / f"pathb_seed{args.seed}.pt"
