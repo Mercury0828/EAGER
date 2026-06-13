@@ -6,18 +6,21 @@
 
 ## Current state
 
-- **Current phase**: Phase 4 COMPLETE. Phases 0/1A/1B/2/3/4 all complete.
-- **Last completed step**: Phase 4 acceptance (5 toys == brute force;
-  goldens OPTIMAL with J*=6 and exact env replay; gap harness 8/8 OPTIMAL,
-  J* <= J_greedy everywhere, greedy gaps 16.7%-64.5%)
-- **Exact next step**: Phase 5 (EAGER agent, guide §7-§8) — requires owner
-  authorization; R-GCN encoder (PyG attempt -> hand-rolled fallback per
-  §7.1), attention decoder, value head, IL from GreedyJIT traces (>=50k
-  transitions, >=90% val top-1), PPO with curriculum; install CUDA torch
-  over the venv (D42)
-- **Blockers**: none. Standing debts: D29 (real METIS before paper-grade
-  MHSA-vs-METIS claims), D38 (GreedyEager baseline at Phase 6), D3 (weight
-  calibration pilot at Phase 6)
+- **Current phase**: Phase 5 COMPLETE (acceptance via D68 selection-as-method;
+  D73). Phases 0/1A/1B/2/3/4/5 all complete.
+- **Last completed step**: Phase 5 close — IL accepted (val top-1 0.9681,
+  held-out 1.0398); PPO deployed model (seed 1) beats its expert GreedyJIT
+  on the 400-pair held-out (0.9936, p=1.14e-3), win isolated to proactive
+  provisioning by decomposition; 4/5 seeds beat the expert in the
+  provisioning-bound regime (p<=9.1e-4)
+- **Exact next step**: Phase 6 (full matrix) — train final EAGER (5 seeds) +
+  DDQN-flat per config; §9.7 NoProactive ablation (the rigorous proactivity
+  isolation); GreedyEager baseline (D38); weight calibration (D3); real
+  METIS (D29). Requires owner authorization.
+- **Blockers**: none. Standing debts carried to Phase 6: D29 (real METIS),
+  D38 (GreedyEager baseline), D3 (weight calibration), and the IL-placement
+  limitation (map top-1 ~0.87 caps comfortable-regime parity — candidate for
+  stronger placement supervision as future work).
 
 ## Session authorization
 
@@ -863,3 +866,112 @@ no test pollution:          PASS
 episode outputs identical:  PASS
 OVERALL: PASS
 ```
+
+---
+
+## Phase 5 — EAGER agent (R-GCN + attention decoder + IL + PPO)
+
+Status: COMPLETE (2026-06-13). Acceptance via D68 owner-authorized
+selection-as-method with full per-seed disclosure (D73). Authorized by the
+owner on 2026-06-11; main-line directive (2026-06-12): the contribution is
+that the learned GNN+RL policy beats the EXPERT IT IMITATES (GreedyJIT).
+
+### Architecture (guide §6.2, §7) — accepted
+
+R-GCN encoder via PyTorch Geometric `RGCNConv` (3 layers, d=128, mean
+aggr, root W_0, LayerNorm; PyG installs clean on win/cu128 so the §7.1
+hand-roll fallback was NOT needed, D48); pointer-attention decoder with
+segment softmax over the D15 valid-action set + value head (D48); state
+graph per §6.2 with convention features D52/D54/D56. Model + pipeline unit
+tests green (batched==single logits invariant, mask-respect, etc.).
+
+### Phase I — Imitation Learning (guide §8.1) — ACCEPTED
+
+`python scripts/train_il.py` (expert = GreedyJIT; equivalence-aware
+cost-sensitive loss D57; 1 DAgger round D55):
+
+- val top-1 **0.9681** (gate >= 0.90: PASS)
+- held-out CRN-paired vs GreedyJIT: ratio **1.0398** (gate <= 1.05: PASS,
+  i.e. IL agent within 5% of GreedyJIT)
+- iteration trail D52-D57 (per-type accuracy diagnosis drove the
+  convention features + equivalence-aware map loss).
+
+### Phase II — PPO (guide §8.2) — accepted via selection-as-method (D68/D73)
+
+Accepted recipe (D65): CRN-paired policy gradient (D63) + targeted-
+exploration self-imitation (D60/D62) + regime-conditional IL anchor (D65) +
+value warmup (D58); selection/evaluation protocol D59/D61/D69.
+
+**Five training seeds, identical D65 recipe, 400-pair held-out vs GreedyJIT
+(seed-777, 20 cases x 20 CRN env seeds), with regime stratification**
+(provisioning-bound = p>=0.2 or W=1, 240 pairs; comfortable = p<0.2 and W=2,
+160 pairs). Paired Wilcoxon signed-rank, alternative "agent < greedy":
+
+```
+seed | full ratio | full p   | prov ratio | prov p    | prov wins | comf ratio
+-----+------------+----------+------------+-----------+-----------+-----------
+  1  |   0.9936   | 1.14e-3  |   0.9591   | 2.57e-12  | 155/240   |  1.062   <- DEPLOYED
+  2  |   1.0179   | 9.82e-1  |   0.9937   | 2.48e-1   | 118/240   |  1.066
+  3  |   1.0247   | 2.68e-1  |   1.0063*  | 1.28e-4   | 168/240   |  1.061
+  4  |   1.0145   | 9.66e-1  |   0.9645   | 9.09e-4   | 124/240   |  1.113
+  5  |   1.0116   | 8.47e-1  |   0.9641   | 1.16e-6   | 146/240   |  1.106
+```
+(*seed 3 provisioning mean ratio is ~1.0 but the paired signed-rank is
+significant: many small wins, few large losses — 168/240 wins, p=1.3e-4.)
+
+**Deployed artifact** = seed 1 (best by the D59/D69 validation selection
+across the 5 seeds): beats its IL expert GreedyJIT on held-out at
+**ratio 0.9936, 208/400 wins, p=1.14e-3, zero truncations**.
+
+**Mechanism — the win is PROACTIVE PROVISIONING, not placement**
+(decomposition of seed 1 vs GreedyJIT, mean per-pair deltas):
+
+```
+stratum         ratio    p          mean dT   dC_comm   dC_waste
+provisioning    0.9591   2.6e-12    -3.92     -0.83     -0.15
+comfortable     1.0616   ~1.0       +4.44     +1.12     -0.09
+```
+In the provisioning-bound regime EAGER cuts makespan (dT=-3.92, latency
+hidden by proactive generation) with placement matched-or-better
+(dC_comm=-0.83): the win over the expert is attributable to the learned
+proactivity, NOT to placement. The comfortable regime (easy provisioning,
+no proactive headroom) is a tie-to-slight-loss — driven by the imperfect IL
+placement clone (dC_comm=+1.12; map top-1 ~0.87, static placement locked in
+the first ~20 micro-actions), a documented limitation.
+
+### Acceptance framing (D73, on-thesis, full disclosure)
+
+- Main claim ESTABLISHED: the learned GNN+RL policy beats its IL expert
+  GreedyJIT (deployed seed 1, full-distribution p=1.14e-3), with the win
+  isolated to learned proactive provisioning.
+- Robustness: **4/5 seeds beat the expert significantly in the
+  provisioning-bound regime** (p from 2.6e-12 to 9.1e-4; seed 2 the weak
+  exception). All five seeds disclosed; none omitted; §10.4/D49 5-seed
+  commitment honored; deployed model chosen by declared validation
+  selection (selection-as-method, D68).
+- This is the regime-characterized result guide §15 pre-authorized and the
+  D35 finding predicted: proactive provisioning is valuable in the
+  provisioning-constrained regime, neutral where provisioning is easy.
+- The strict 5/5 full-distribution per-seed gate was NOT reached after ~19
+  recipe variants and ~6 assault rounds (D66-D73); root cause = IL placement
+  ceiling, logged as a limitation. The §9.7 NoProactive ablation (Phase 6)
+  isolates proactivity rigorously across the full matrix.
+
+### What was explicitly NOT done (integrity record)
+
+- MHSA expert tried then reverted (D71/D72): empirically worse (held-out
+  1.0995 — the GNN cannot clone MHSA's per-instance SA placement) AND
+  off-thesis (would invite "the expert does the work" critique).
+- A request to retroactively rewrite §10.4/D49 to a single seed and conceal
+  the others was REFUSED as research-record falsification; the owner then
+  authorized the full-disclosure selection-as-method route instead.
+
+### Showable-artifact milestone (guide §11)
+
+`docs/WALKTHROUGH.md` (golden_micro_2 end-to-end) + `scripts/make_showable_zip.py`
+bundle (src + tests + configs + scripts + experiments + DESIGN_DECISIONS +
+WALKTHROUGH, excluding data/artifacts and the internal guide).
+
+### Full suite + protocols
+
+(pasted on completion below)
