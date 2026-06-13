@@ -1161,6 +1161,13 @@ needed for (a) stable PPO refinement (flat diverges) and (b) the regime-adaptive
 policy that beats fixed always-on. flat-PPO is a FAIR, SHIPPABLE baseline (beats
 AGG-reactive, p=2.4e-7) — it goes in T5; the degenerate DDQN (D81) does not.
 
+Figure F4 (results/fig_ppo_stability.png, fig_ppo_stability.py): an INDEPENDENT
+re-run of both encoders (per-iter PPO trajectory now recorded to JSON)
+reproduces it — graph stays stable ~0.92 (held-out 0.9418, p=1.5e-16); flat
+diverges again (spikes to 9.3/10.3/5.5/3.95 at it45-60; held-out 0.9609 via
+best-val). Divergence ONSET is stochastic (it~20 vs it~45) but divergence is
+reproducible; both panels (log-scale val ratio, KL) make the contrast plain.
+
 ### D84 — stochastic optimal-gap (T4 stochastic extension)
 
 `eager.exact.stochastic_opt.clairvoyant_optimum`: per CRN seed the env is
