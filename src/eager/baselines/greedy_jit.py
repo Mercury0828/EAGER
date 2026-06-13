@@ -132,3 +132,161 @@ class GreedyJITPolicy:
         # 2./3. shared list scheduling + saturating JIT provisioning (D33)
         action = greedy_schedule_or_gen(env)
         return action if action is not None else ADVANCE
+
+
+class GreedyAdaptivePolicy:
+    """GreedyAdaptive (D76): GreedyJIT placement + list scheduling +
+    BOUNDED-LOOKAHEAD demand-aware provisioning that resolves the eager-vs-
+    lazy tradeoff the regime map (D75) exposed. For each link it provisions
+    proactively for remote gates whose number of unfinished predecessors is
+    <= K (gates that will become ready 'soon'), capping stored+in-flight at
+    that imminent-demand count so it does not over-generate pairs that would
+    expire before use.
+
+    K adapts to the regime: a pair generated now arrives in ~1/p slots and
+    survives T_cut slots, so it is useful only for gates that become ready
+    within ~(1/p + T_cut) slots; in DAG terms K ~= (1/p + T_cut)/d_rem. Low
+    p (slow generation) => large K => behaves eager; high p + tight T_cut
+    (fast generation, short lifetime) => small K => behaves lazy and avoids
+    the waste regime. K=0 reduces to JIT; K=inf to always-on."""
+
+    def __init__(self, placement_seed: int = 0, lookahead: int | None = None,
+                 name: str = "greedy_adaptive"):
+        self.placement_seed = placement_seed
+        self.lookahead = lookahead          # None => regime-adaptive
+        self.name = name
+        self._placement: list[int] | None = None
+        self._K: int | None = None
+
+    def _adaptive_K(self, env: EagerEnv) -> int:
+        if self.lookahead is not None:
+            return self.lookahead
+        p = env.hardware.links[0].p
+        t_cut = env.hardware.links[0].T_cut
+        horizon = (1.0 / p) + (t_cut if t_cut is not None else 50)
+        return max(0, int(round(horizon / max(1, env.params.d_rem))))
+
+    def __call__(self, env: EagerEnv) -> Action:
+        if self._placement is None:
+            self._placement = compute_placement(
+                env.instance, env.hardware, self.placement_seed)
+        for q in map_emission_order(env.instance):
+            if q in env._unmapped:
+                return Map(q, self._placement[q])
+
+        crit = env.instance.criticality
+        for g in sorted(env.ready_gates(), key=lambda g: (-crit[g], g)):
+            if env.is_valid(Schedule(g)):
+                return Schedule(g)
+
+        # bounded-lookahead demand: imminent remote gates per link
+        if self._K is None:
+            self._K = self._adaptive_K(env)
+        from ..env.state import UNSCHEDULED
+        nl = env.hardware.num_links
+        imminent = [0] * nl
+        for gid, gr in enumerate(env.gates):
+            if (gr.state == UNSCHEDULED and gr.remote
+                    and gr.n_unfinished_preds <= self._K):
+                for l in gr.route:
+                    imminent[l] += 1
+        # provision links whose imminent demand exceeds current supply,
+        # most-critical-blocked first (reuse deficit_demand for ordering)
+        _, max_crit = env.deficit_demand()
+        order = sorted(range(nl),
+                       key=lambda l: (-(max_crit[l] or 0), l))
+        for l in order:
+            ls = env.links[l]
+            supply = ls.stored + ls.busy_channels
+            if imminent[l] > supply and env.is_valid(GenEPR(l)):
+                return GenEPR(l)
+        return ADVANCE
+
+
+class GreedyRegimeProvisionPolicy:
+    """Regime-adaptive provisioning (D76): the strong provisioning expert
+    that approximates the path-A oracle on a fixed (e.g. AGG) placement.
+    Behaves EAGER (always-on) except in the WASTE regime — tight cutoff with
+    fast aggregate generation (T_cut small AND p*W large) — where always-on
+    over-generates and pairs expire, so it switches to bounded-lookahead
+    K=1 (lazy-ish). This is the IL target for the provisioning-only EAGER
+    (path B) and a baseline in its own right; placement is supplied
+    externally (AGG/MHSA) since this policy learns/decides only provisioning.
+
+    Regime detection uses the link parameters (p, W, T_cut) that are also
+    state features, so the learned agent can reproduce the switch from
+    observation."""
+
+    def __init__(self, placement_seed: int = 0, placement: list[int] | None = None,
+                 name: str = "greedy_regime_prov"):
+        self.placement_seed = placement_seed
+        self.name = name
+        self._placement = placement
+        self._delegate = None
+
+    @staticmethod
+    def is_waste_regime(hardware) -> bool:
+        lc = hardware.links[0]
+        tight = lc.T_cut is not None and lc.T_cut <= 5
+        fast = lc.p * lc.W >= 0.6
+        return tight and fast
+
+    def __call__(self, env: EagerEnv) -> Action:
+        if self._delegate is None:
+            if self.is_waste_regime(env.hardware):
+                # reactive JIT is near-oracle in the waste regime (always-on
+                # wastes; bounded-lookahead over-corrects near the boundary)
+                pl = self._placement
+                self._delegate = GreedyJITPolicy(
+                    placement_fn=(lambda i, h, p=pl: p) if pl is not None
+                    else None, placement_seed=self.placement_seed)
+            else:
+                self._delegate = GreedyEagerPolicy(self.placement_seed)
+                if self._placement is not None:
+                    self._delegate._placement = list(self._placement)
+        return self._delegate(env)
+
+
+class GreedyEagerPolicy:
+    """GreedyEager (guide D38, §9.7-adjacent): GreedyJIT placement + list
+    scheduling, but MAXIMALLY PROACTIVE provisioning — saturate every free
+    generation channel (subject to buffer-overflow safety) on EVERY link that
+    routes at least one still-unscheduled remote gate, every slot, instead of
+    JIT-on-deficit. This is the honest "always-on provisioning" control that
+    answers the reviewer question 'is the learned proactivity needed, or would
+    trivially always generating suffice?'. EAGER must beat THIS, not just the
+    reactive GreedyJIT, to justify learning the provisioning policy (D75)."""
+
+    def __init__(self, placement_seed: int = 0, name: str = "greedy_eager"):
+        self.placement_seed = placement_seed
+        self.name = name
+        self._placement: list[int] | None = None
+        self._routed_links: set[int] | None = None
+
+    def __call__(self, env: EagerEnv) -> Action:
+        if self._placement is None:
+            self._placement = compute_placement(
+                env.instance, env.hardware, self.placement_seed)
+
+        for q in map_emission_order(env.instance):
+            if q in env._unmapped:
+                return Map(q, self._placement[q])
+
+        # schedule the most critical valid ready gate (same as GreedyJIT)
+        crit = env.instance.criticality
+        for g in sorted(env.ready_gates(), key=lambda g: (-crit[g], g)):
+            if env.is_valid(Schedule(g)):
+                return Schedule(g)
+
+        # maximally proactive: saturate channels on every link still serving
+        # an unscheduled remote gate (always-on, not deficit-gated)
+        from ..env.state import UNSCHEDULED
+        needed: set[int] = set()
+        for gid, gr in enumerate(env.gates):
+            if gr.state == UNSCHEDULED and gr.remote:
+                needed.update(gr.route)
+        for l in sorted(needed):
+            if env.is_valid(GenEPR(l)):
+                return GenEPR(l)
+
+        return ADVANCE

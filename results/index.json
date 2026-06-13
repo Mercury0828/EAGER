@@ -53,5 +53,40 @@
     "path": "phase4_gap.parquet",
     "replay_verified": true,
     "time_limit_s": 600.0
+  },
+  "phase6_regime_grid": {
+    "B": 8,
+    "T_cut_grid": [
+      5,
+      20,
+      50
+    ],
+    "W_grid": [
+      1,
+      2,
+      4
+    ],
+    "crn_paired": true,
+    "instances": 12,
+    "methods": [
+      "agg",
+      "eager",
+      "greedy_eager",
+      "greedy_jit",
+      "mhsa_ls",
+      "random_prog"
+    ],
+    "p_grid": [
+      0.05,
+      0.08,
+      0.12,
+      0.2,
+      0.3,
+      0.5
+    ],
+    "path": "phase6_regime_grid.parquet",
+    "qpus": 4,
+    "seeds": 8,
+    "weights": "alpha=1,beta=1,gamma=0.5 (D74)"
   }
 }
