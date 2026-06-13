@@ -6,26 +6,29 @@
 
 ## Current state
 
-- **Current phase**: Phase 6 COMPLETE (2026-06-13). Phases 0/1A/1B/2/3/4/5/6
-  all complete. Architecture pivot to path B (D76) executed and locked.
-- **Last completed step**: Phase 6 close — T3 main table (EAGER tops all 8
-  baselines incl. CloudQC; beats AGG +2.2% on the grid p=1.9e-120, +5.1% on
-  the realistic distribution), F2 regime map, weight calibration (D74),
-  GreedyEager + provisioning-spectrum + CloudQC baselines (D75/D76/D79),
-  §9.7 NoProactive ablation (= EAGER vs AGG-reactive +5.1% p=1.9e-22),
-  zero-shot transfer (D80: K=4 generalizes to QASMBench N=28..98, 0.90
-  p=4.5e-11; K=8 unseen-topology unreliable, p=0.95 — honest limit),
-  DDQN-flat recorded failure (D81, not shipped), T4 optimal anchor (D82).
-- **Exact next step**: Phase 7 (paper-facing) — T5 ablation table, remaining
-  figures, prose; optional flat-PPO clean representation isolation (D81) and
-  stochastic-optimum T4 (D82) if owner wants them. Requires owner auth.
+- **Current phase**: Phase 7 COMPLETE (2026-06-13). Phases 0/1A/1B/2/3/4/5/6/7
+  all complete. Architecture pivot to path B (D76) executed and locked; two
+  owner-requested enhancements (flat-PPO isolation D83, stochastic-optimum T4
+  D84) delivered; T5 ablation table scripted.
+- **Last completed step**: Phase 7 close — flat-PPO representation isolation
+  (D83: same IL+PPO+budget, MLP encoder vs R-GCN; IL ties at 0.972 but flat
+  PPO diverges and cannot beat always-on, graph wins 0.9495 vs 0.9591 — a fair
+  SHIPPABLE baseline that supersedes the degenerate DDQN); stochastic-optimum
+  T4 (D84: clairvoyant perfect-information B&B; reactive +25.9% off the
+  stochastic optimum, EAGER reaches it); T5 ablation table scripted; all
+  protocols green (164 passed, 10x ALL STABLE, clean-state byte-identical).
+- **Exact next step**: paper writing (prose, polishing); optional remaining
+  figures (flat-vs-graph PPO-stability F4). Core experimental program (Phases
+  0-7) is complete. Requires owner direction.
 - **Blockers**: none. Standing debts: D29 (real METIS — partitioner is still
   pure-Python greedy+FM, acceptable since AGG/MHSA placements carry the main
   result); reported LIMITATIONS (all honestly logged, none hidden):
   (i) EAGER 7.7% worse than pure-reactive in the EXTREME waste regime (D78b),
   (ii) zero-shot topology transfer to unseen K=8 unreliable (D80),
-  (iii) DDQN-flat conflates algo+representation; clean flat-PPO isolation is
-  future work (D81).
+  (iii) flat-state DQN (D81) conflates algo+representation — superseded by the
+  clean flat-PPO isolation (D83); (iv) a latent env edge-case is reachable only
+  by unpruned exhaustive micro-action search (stochastic_opt seeds an incumbent
+  to avoid it; no validated result is affected, D84).
 
 ## Session authorization
 
@@ -1128,3 +1131,84 @@ trajectory_sha256=4e0bf86db49661a1cb91232f70b3fcebf5dd5caa8fd086f4cbe4d03417aee7
 | 6.9 | Limitations reported, not hidden | PASS | extreme-waste residual (D78b), K=8 transfer (D80), DDQN confound (D81) |
 | 6.10 | Protocol: suite green, 10x repeat, clean-state, D-entries, tag+push | PASS | 159 passed; 10x ALL STABLE; clean-state byte-identical; D74-D82; tag phase-6-done |
 | 6.11 | Double-blind + lineage hygiene maintained | PASS | no author strings / forbidden lineage terms in Phase 6 additions |
+
+---
+
+## Phase 7 — Paper-facing: ablations, clean why-GNN isolation, stochastic optimum
+
+Status: COMPLETE (2026-06-13), tagged `phase-7-done`. Authorized by the owner
+("进行Phase 7" + the two named enhancements). Two owner-requested enhancements
+plus the T5 ablation table. Decisions D83-D84.
+
+### D83 — flat-PPO clean representation isolation (the rigorous why-GNN, supersedes DDQN)
+
+MLPEncoder (per-node MLP, NO message passing) swapped into EagerPolicy via an
+`encoder=` injection; trained with EAGER's EXACT IL+PPO pipeline, budget, and
+hyperparameters (`scripts/train_pathb.py --flat-encoder`) — the ONLY changed
+variable is the encoder (no DQN-vs-PPO confound).
+
+```
+flat IL val top-1 = 0.9721  (graph 0.9701 — IMITATION TIES)
+flat held-out vs AGG-reactive: ratio=0.9591 won=65/192 p=2.40e-07  (still beats AGG)
+flat vs AGG-eager (always-on): 1.0183  (does NOT beat always-on; waste 1.097)
+flat PPO val_ratio: it10 0.937 -> it20 3.60 -> it30 7.93 -> it60 10.4  (DIVERGES;
+   best-val early-stop rescues to it10)
+graph EAGER held-out vs AGG-reactive: 0.9495 (beats always-on in both regimes, D78b)
+```
+
+Conclusion: message passing is NOT needed for imitation (flat ties), but IS
+needed for (a) stable PPO refinement (flat diverges) and (b) the regime-adaptive
+policy that beats fixed always-on. flat-PPO is a FAIR, SHIPPABLE baseline (beats
+AGG-reactive, p=2.4e-7) — it goes in T5; the degenerate DDQN (D81) does not.
+
+### D84 — stochastic optimal-gap (T4 stochastic extension)
+
+`eager.exact.stochastic_opt.clairvoyant_optimum`: per CRN seed the env is
+deterministic, so branch-and-bound (incumbent-seeded, admissible LB, within-slot
+symmetry breaking, replay-from-reset) finds the PROVEN min-J = the clairvoyant
+perfect-information optimum, a rigorous lower bound on any non-anticipative
+policy. `experiments/phase7_stochastic_gap.py` (p=0.5, 16 CRN seeds, all solved
+to proven optimum, 0 skipped):
+
+```
+                       optimum   GreedyJIT(reactive)   GreedyEager   EAGER(path-B,OOD)
+q2m1 (no hideable lat) 5.062     +0.0%                 +0.0%         +0.0%
+q3m2 (hideable lat)    5.062     +25.9%                +0.0%         +0.0%
+q4m3 (hideable lat)    5.062     +25.9%                +0.0%         +0.0%
+```
+
+Reactive provisioning is provably ~26% above the stochastic optimum where there
+is latency to hide; the learned EAGER policy REACHES the clairvoyant optimum
+(even OOD on these tiny N=2-4 instances). (q4m4 dropped: tree exceeds the node
+cap; the 3 retained instances solve to proven optimum — no unproven values
+shipped.)
+
+### T5 ablation table (scripted, results/t5_ablation.md)
+
+`experiments/phase7_t5_ablation.py` emits the table from the artifact JSONs +
+the stochastic-gap parquet (no hand numbers): EAGER full 0.9495 (graph) vs flat
+0.9591 (− graph encoder) vs 1.000 NoProactive (− proactivity), + the T4
+stochastic-optimum anchor.
+
+### Protocol evidence
+
+```
+.venv\Scripts\python.exe -m pytest -q   ->  164 passed, 1 xfailed in 287.39s
+.venv\Scripts\python.exe scripts\run_repeat_suite.py  ->  ALL STABLE (56 tests x 10 runs)
+clean-state (run_episode x2 post-pytest):  byte-identical,
+   trajectory_sha256=4e0bf86db49661a1cb91232f70b3fcebf5dd5caa8fd086f4cbe4d03417aee718
+```
+
+### Phase 7 self-audit
+
+| # | Criterion | Verdict | Evidence |
+|---|---|---|---|
+| 7.1 | Flat-PPO clean representation isolation (owner enhancement 1) | PASS | D83: same IL+PPO+budget, only encoder swapped; graph 0.9495 > flat 0.9591; flat PPO diverges |
+| 7.2 | flat-PPO is a fair shippable baseline (not a strawman) | PASS | flat beats AGG-reactive 0.9591 p=2.4e-7; replaces degenerate DDQN in T5 |
+| 7.3 | Stochastic-optimum T4 (owner enhancement 2) | PASS | D84: clairvoyant B&B, proven optima; reactive +25.9% off, EAGER reaches optimum |
+| 7.4 | T4 values are PROVEN optima (no truncated B&B shipped) | PASS | 16/16 seeds solved, 0 skipped; q4m4 dropped rather than ship unproven |
+| 7.5 | T5 ablation table scripted (no hand numbers) | PASS | phase7_t5_ablation.py reads JSON/parquet -> t5_ablation.md |
+| 7.6 | New code unit-tested | PASS | test_graph_model (MLPEncoder ignores edges) + test_stochastic_opt (lower-bound, determinism, node-cap) |
+| 7.7 | Protocol: suite green, 10x repeat, clean-state | PASS | 164 passed; 10x ALL STABLE; clean-state byte-identical |
+| 7.8 | Decision log + integrity (failures/edge-cases recorded) | PASS | D83-D84; flat IL-tie and PPO-divergence both reported; env edge-case documented |
+| 7.9 | Double-blind + lineage hygiene maintained | PASS | no author strings / forbidden lineage terms in Phase 7 additions |
