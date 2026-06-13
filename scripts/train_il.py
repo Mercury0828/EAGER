@@ -31,6 +31,8 @@ ART = Path("artifacts") / "agents"
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--transitions", type=int, default=150_000)
+    parser.add_argument("--expert", choices=["greedy", "mhsa"], default="greedy")
+    parser.add_argument("--mhsa-budget", type=int, default=8000)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--max-epochs", type=int, default=20)
     parser.add_argument("--batch-size", type=int, default=512)
@@ -50,9 +52,14 @@ def main(argv: list[str] | None = None) -> int:
     device = torch.device(args.device)
     print(f"device: {device}")
 
-    print("collecting expert dataset ...")
+    expert_factory = None
+    if args.expert == "mhsa":
+        from eager.baselines.mhsa import make_mhsa_policy
+        expert_factory = lambda: make_mhsa_policy(seed=0, budget=args.mhsa_budget)
+    print(f"collecting expert dataset (expert={args.expert}) ...")
     episodes, stats = collect_expert_dataset(
-        min_transitions=args.transitions, seed=args.seed)
+        min_transitions=args.transitions, seed=args.seed,
+        expert_factory=expert_factory)
     print(f"dataset: {stats}")
     train_data, val_data = split_episodes(episodes, val_frac=0.1,
                                           seed=args.seed + 1)

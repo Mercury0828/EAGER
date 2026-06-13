@@ -83,11 +83,15 @@ def map_positive_positions(env: EagerEnv, aset: ActionSet, expert_action,
 
 def collect_expert_dataset(min_transitions: int = 50_000, seed: int = 0,
                            episodes_seed0: int = 0, stage: str = "A",
-                           log_every: int = 50) -> tuple[list[list[Transition]], dict]:
-    """Run GreedyJIT episodes over the stage distribution until the
-    transition budget is met; returns episodes (list of transition lists)."""
+                           log_every: int = 50, expert_factory=None
+                           ) -> tuple[list[list[Transition]], dict]:
+    """Run EXPERT episodes over the stage distribution until the transition
+    budget is met. ``expert_factory() -> policy`` defaults to GreedyJIT;
+    pass ``make_mhsa_policy`` for the stronger MHSA-placement teacher (D71)."""
     from ..baselines.partition import interaction_graph
     from ..env.actions import Map as MapAction
+    if expert_factory is None:
+        expert_factory = lambda: GreedyJITPolicy(placement_seed=0)
     rng = np.random.default_rng(seed)
     episodes: list[list[Transition]] = []
     n_tr = 0
@@ -97,7 +101,7 @@ def collect_expert_dataset(min_transitions: int = 50_000, seed: int = 0,
     while n_tr < min_transitions:
         case = sample_case(rng, stage=stage)
         env = EagerEnv(case.hardware, case.instance)
-        policy = GreedyJITPolicy(placement_seed=0)
+        policy = expert_factory()
         env.reset(episodes_seed0 + ep)
         weights = interaction_graph(case.instance)
         hop = _hop_matrix(case.hardware)
