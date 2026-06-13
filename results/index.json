@@ -54,6 +54,25 @@
     "replay_verified": true,
     "time_limit_s": 600.0
   },
+  "phase6_main": {
+    "crn_paired": true,
+    "description": "T3 main results: all baselines + learned EAGER over the p/W/T_cut regime grid, CRN-paired",
+    "eager": "AGG placement+aggregation + learned provisioning (path B, D77/D78)",
+    "headline": "EAGER tops the ranking (83.45); beats AGG (strongest static) by 2.2% on the grid, p=1.9e-120; +5.1% on the realistic distribution",
+    "methods": [
+      "agg",
+      "cloudqc",
+      "eager",
+      "greedy_adaptive",
+      "greedy_eager",
+      "greedy_jit",
+      "greedy_regime_prov",
+      "mhsa_ls",
+      "random_prog"
+    ],
+    "path": "phase6_main.parquet",
+    "weights": "alpha=1,beta=1,gamma=0.5 (D74)"
+  },
   "phase6_regime_grid": {
     "B": 8,
     "T_cut_grid": [
@@ -69,12 +88,9 @@
     "crn_paired": true,
     "instances": 12,
     "methods": [
-      "agg",
-      "eager",
-      "greedy_eager",
-      "greedy_jit",
-      "mhsa_ls",
-      "random_prog"
+      "cloudqc",
+      "greedy_adaptive",
+      "greedy_regime_prov"
     ],
     "p_grid": [
       0.05,
@@ -84,7 +100,7 @@
       0.3,
       0.5
     ],
-    "path": "phase6_regime_grid.parquet",
+    "path": "phase6_newbaselines.parquet",
     "qpus": 4,
     "seeds": 8,
     "weights": "alpha=1,beta=1,gamma=0.5 (D74)"
