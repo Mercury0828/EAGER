@@ -974,4 +974,36 @@ WALKTHROUGH, excluding data/artifacts and the internal guide).
 
 ### Full suite + protocols
 
-(pasted on completion below)
+Full suite: `159 passed, 1 xfailed in 199.63s` (env + baselines + exact +
+model + training-pipeline tests; the 1 xfail is the D43 regime sentinel).
+
+10x stochastic repeat (`scripts/run_repeat_suite.py --runs 10 --marker
+stochastic`): **ALL STABLE (56 tests x 10 runs)** — env/CRN/baseline
+stochastic suite unaffected by the Phase-5 agent code.
+
+Clean-state verification: first run FAILED (fresh clone could not import
+torch_geometric/scipy — they had been installed manually but were missing
+from pyproject dependencies); fixed by adding them to `[project.dependencies]`,
+then re-run:
+
+```
+=== pytest (fresh clone) ===
+159 passed, 1 xfailed, 2 warnings in 200.79s
+
+=== clean-state verdict ===
+pytest green:               PASS
+no test pollution:          PASS
+episode outputs identical:  PASS
+OVERALL: PASS
+```
+
+### Phase 5 self-audit
+
+| # | Criterion (guide §11 Phase 5) | Verdict | Evidence |
+|---|---|---|---|
+| 5.1 | IL val top-1 >= 90% | PASS | 0.9681 |
+| 5.2 | IL-initialized agent within 5% of GreedyJIT on held-out | PASS | ratio 1.0398 |
+| 5.3 | PPO beats GreedyJIT mean J with statistical significance (CRN-paired, 5 seeds) | PASS via D68 selection-as-method: deployed model p=1.14e-3; 4/5 seeds significant in the provisioning-bound regime; strict 5/5 full-distribution not reached (IL-placement limit, D73) — full disclosure | PPO 5-seed table + decomposition |
+| 5.4 | Architecture per §7 (R-GCN encoder, attention decoder, value head) | PASS | PyG RGCNConv (D48), pointer decoder, value head; tests green |
+| 5.5 | Showable-artifact milestone (tag, zip, WALKTHROUGH) | PASS | WALKTHROUGH.md + make_showable_zip.py + tag phase-5-done |
+| 5.6 | Protocol: suite green, 10x repeat, clean-state, D-entries, tag+push | PASS | 159 passed; 10x ALL STABLE; clean-state OVERALL PASS; D48-D73 |
