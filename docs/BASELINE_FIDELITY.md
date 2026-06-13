@@ -133,6 +133,26 @@ Template per baseline:
 - **Budget/fairness**: Phase 6 trains with the same env-step budget as
   EAGER's PPO phase; agent RNG (torch/numpy) seeded separately from the env
   CRN.
+- **Phase 6 OUTCOME (D81) — recorded failure, NOT shipped as a headline
+  competitor**: trained on the path-B provisioning-only task (premapped AGG,
+  K=4 stratum; fixed-K because the flat state dim is K-specific — itself the
+  config-lock point), 600k env steps, fixed max-size padded action layout
+  (N_max=30, M_max=90, L=4, masked argmax). The learned policy is DEGENERATE:
+  it over-emits GenEPR (hundreds-to-thousands per episode) and under-schedules
+  gates (e.g. 10/45 gates scheduled), so circuits do not complete and episodes
+  truncate — mean J 1650 vs AGG-reactive 71.8 (23x worse) and worse than even
+  Random-Progressive (~2x). This is a degenerate-policy training failure on
+  the long micro-action horizon (terminal completion signal washed out by
+  gamma over ~460 steps), NOT a competently-trained-but-weaker baseline.
+  Per the research-integrity rule (failed experiments are recorded, not
+  shipped), it is NOT presented as a fair learning competitor in the main
+  table. The "why a graph encoder" claim rests instead on (i) representation —
+  a flat state is config-locked (cannot represent the varying N/K/topology
+  EAGER handles), and (ii) the zero-shot generalization (D80, F3) that a flat
+  model is structurally unable to perform. A clean representation-isolating
+  ablation (flat-state PPO: same algorithm and budget as EAGER, MLP encoder
+  instead of the R-GCN) is the honest future-work isolation; the DQN result
+  conflates algorithm (DQN vs PPO) with representation and is logged as such.
 
 ## CloudQC (stretch / closest published setting, guide §9.8)
 
