@@ -1,14 +1,18 @@
 #!/usr/bin/env python
-"""Figure F4 (guide §10.6 / D83): the clean "why a graph encoder" isolation —
-graph (R-GCN) vs flat (MLP, no message passing) under the IDENTICAL IL+PPO
-pipeline, budget, and hyperparameters (only the encoder differs). Reads the
-PPO trajectories recorded in artifacts/agents/pathb_graph_traj.json and
-pathb_flat_traj.json; writes results/fig_ppo_stability.png at 300 dpi.
+"""Figure F4 (guide §10.6 / D83): graph (R-GCN) vs flat (MLP, no message
+passing) PPO trajectories under the IDENTICAL IL+PPO pipeline (only the encoder
+differs). Reads artifacts/agents/pathb_graph_traj.json + pathb_flat_traj.json;
+writes results/fig_ppo_stability.png at 300 dpi.
 
-Story: the two TIE on imitation (IL val top-1 annotated), but only the graph
-encoder supports STABLE policy-gradient refinement — graph PPO converges and
-stays below 1.0 (beats AGG-reactive), flat PPO DIVERGES (val ratio blows up;
-the deployed flat model is rescued only by best-validation early-stopping).
+IMPORTANT CORRECTION (D86): the 5-seed run REFUTED the original "graph PPO is
+stable, flat diverges" reading of this figure — graph PPO ALSO diverges late on
+~half the seeds (best-val rescues all), so the single graph trajectory shown
+here is an unrepresentative (cherry-stable) run and PPO stability is NOT the
+graph-vs-flat differentiator. The real, reproducible why-GNN signal is
+ADAPTIVITY (figure F5, fig_seed_robustness.py): across 5 seeds the graph beats
+BOTH reactive AND always-on, while flat beats reactive but LOSES to always-on.
+This figure is retained only to show the flat-PPO divergence + the IL tie; for
+the why-GNN claim use F5. Both panels still show the IL tie (annotated).
 """
 
 from __future__ import annotations

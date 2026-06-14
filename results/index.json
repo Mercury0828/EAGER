@@ -11,6 +11,13 @@
     "method": "instance-cluster bootstrap 95% CI",
     "path": "effect_sizes.md"
   },
+  "multiseed": {
+    "all_beat_agg": true,
+    "n_seeds": 5,
+    "path": "multiseed.md",
+    "vs_react_mean": 0.9755886034400361,
+    "vs_react_std": 0.014916623240743354
+  },
   "phase2_panel": {
     "crn_paired": true,
     "hardware": "K=4 2x2 grid, kappa=ceil(1.25N/4), p=1/12, W=2, B=8, T_cut=20, w=1, stochastic",

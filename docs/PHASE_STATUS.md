@@ -1219,3 +1219,60 @@ clean-state (run_episode x2 post-pytest):  byte-identical,
 | 7.7 | Protocol: suite green, 10x repeat, clean-state | PASS | 164 passed; 10x ALL STABLE; clean-state byte-identical |
 | 7.8 | Decision log + integrity (failures/edge-cases recorded) | PASS | D83-D84; flat IL-tie and PPO-divergence both reported; env edge-case documented |
 | 7.9 | Double-blind + lineage hygiene maintained | PASS | no author strings / forbidden lineage terms in Phase 7 additions |
+
+---
+
+## Review-driven hardening (post Phase 7, owner self-review — items A/B/C, D85/D86)
+
+Owner asked to review all results for solidity + improvement. Three items run.
+
+### A — 5-seed robustness (answers "is it a lucky seed?": NO)
+
+`experiments/phase7_multiseed.py`, pre-registered 5 path-B seeds, same recipe,
+identical n=288 held-out vs AGG-reactive:
+
+```
+seed0 0.9495 | seed1 0.9842 | seed2 0.9769 | seed3 0.9847 | seed4 0.9827
+5-seed mean 0.9756 +/- 0.0149  (min 0.9495, max 0.9847) — ALL beat AGG-reactive
+```
+
+Honest: deployed seed0 (0.9495, best-val selected per D68) is the strongest;
+the unbiased 5-seed mean is 0.976 (+2.4%). Paper reports BOTH.
+
+### B — effect sizes + instance-cluster bootstrap 95% CIs (replace bare p)
+
+`experiments/phase7_effect_sizes.py`:
+
+```
+EAGER vs AGG : per-inst 0.9564  95% CI [0.929, 0.984]  robust but CONCENTRATED
+               (median 1.0000, 44% paired-win — large wins where provisioning
+               binds, ties in the comfortable regime; NOT uniform dominance)
+EAGER vs MHSA: per-inst 0.9617  95% CI [0.890, 1.033]  CROSSES 1.0 — NOT robust
+               under clustering (honest; ranking holds via AGG>MHSA, EAGER>AGG)
+zero-shot K=4: per-circuit 0.8967  95% CI [0.851, 0.940]  robust
+```
+
+### C — waste curriculum: the residual is FUNDAMENTAL regime tension (D85)
+
+Waste-stratified held-out (n=288, vs AGG-reactive): baseline ~1.006; heavy
+curriculum (frac=0.4) ELIMINATES waste residual (0.970) but BREAKS normal
+(1.80); light (frac=0.12) keeps normal (0.974, overall 0.977) but barely moves
+waste (1.003). A single network cannot be optimal in both regimes — the
+residual is an intrinsic single-policy-multi-regime cost (confirms D75/D76),
+not a training gap. Over-corrected 0.4 model recorded, NOT shipped.
+
+### CORRECTION of D83/F4 (D86) — why-GNN is ADAPTIVITY, not PPO stability
+
+The 5-seed run refuted "graph PPO stable / flat diverges": graph PPO ALSO
+diverges late on ~half the seeds (seed2/3/4/waste_cur), best-val rescues all.
+The F4 graph trajectory was a cherry-stable run. The real, reproducible
+why-GNN signal (figure F5, fig_seed_robustness.py): across 5 seeds graph beats
+BOTH reactive AND always-on (5/5 vs-always-on <= 1.001); flat beats reactive
+(0.960) but LOSES to always-on (1.019). why-GNN now rests on representation
+(D81) + zero-shot (D80) + adaptivity (F5), NOT PPO stability.
+
+### Bug fix (exposed by the 5-seed run)
+
+`run_pathb_agent` stall-guard: a diverged greedy policy that never ADVANCEs no
+longer hangs on the 2M-step backstop (force ADVANCE on time-stall -> valid
+penalized truncation). Committed `3ee1296`.
