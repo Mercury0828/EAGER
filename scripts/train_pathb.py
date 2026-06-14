@@ -30,7 +30,7 @@ from eager.baselines.greedy_jit import (
     GreedyRegimeProvisionPolicy,
 )
 from eager.baselines.traces import run_episode
-from eager.env import EagerEnv
+from eager.env import ADVANCE, EagerEnv
 from eager.model.policy import EagerPolicy, act_greedy, build_action_set
 from eager.model.graph import build_graph
 from eager.train.il import Transition, split_episodes, train_il
@@ -74,8 +74,19 @@ def collect_pathb_dataset(min_transitions: int, seed: int, log_every=100,
 def run_pathb_agent(policy, case, seed, device, max_micro=2_000_000):
     env = premapped_env(case, seed)
     done, steps = False, 0
+    # stall guard: a DIVERGED greedy policy can refuse to ever ADVANCE (only
+    # Schedule/GenEPR), so env.t never moves and the episode never truncates —
+    # an infinite loop. If time stalls past the max distinct useful actions in
+    # one slot, force ADVANCE so the episode truncates to a valid (penalized)
+    # terminal metric instead of hanging on the 2M backstop.
+    stall_limit = 4 * (env.instance.num_gates + env.hardware.num_links + 2)
+    last_t, stall = env.t, 0
     while not done:
         action = act_greedy(policy, env, device)
+        stall = stall + 1 if env.t == last_t else 0
+        last_t = env.t
+        if stall > stall_limit:
+            action = ADVANCE
         _, _, done, info = env.step(action)
         steps += 1
         if steps > max_micro:
